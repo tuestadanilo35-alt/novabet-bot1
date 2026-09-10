@@ -246,30 +246,14 @@ client.on('messageCreate', async (message) => {
     }
 
     if (command === '.win') {
-        const staff = esStaff(message.member);
+        if (![capitan1, capitan2].includes(message.author.id)) return;
 
-        // Si NO es Staff, verificar acceso y estado de inicio
-        if (!staff) {
-            if (![capitan1, capitan2].includes(message.author.id)) return;
-            if (!info.iniciada) {
-                return enviarYBorrar(message.channel, { content: '❌ **No se puede usar .win.** Ambos capitanes deben presionar `.comenzar` primero.' });
-            }
+        // Requiere obligatorio el .comenzar previo
+        if (!info.iniciada) {
+            return enviarYBorrar(message.channel, { content: '❌ **No se puede usar .win.** Ambos capitanes deben presionar `.comenzar` primero.' });
         }
 
-        // Si ES STAFF: Victoria directa instantánea
-        if (staff) {
-            const perdedorId = message.author.id === capitan1 ? capitan2 : capitan1;
-            const total = registrarResultado(message.author.id, perdedorId, info.modalidad);
-            await message.channel.send({
-                embeds: [new EmbedBuilder()
-                    .setTitle('🏆 VICTORIA OTORGADA (STAFF)')
-                    .setDescription(`Ganador: <@${message.author.id}> (+2 Coins, Total: ${total})\n\n🔒 *Eliminando canal...*`)
-                    .setColor('#2ECC71')]
-            });
-            return finalizarYBorrarCanal(message.channel);
-        }
-
-        // Si ES JUGADOR: Generar votación
+        // Generar votación por botones
         const rivalId = message.author.id === capitan1 ? capitan2 : capitan1;
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId(`confirm_win_${message.author.id}`).setLabel('Confirmar Victoria').setStyle(ButtonStyle.Success).setEmoji('✅'),
@@ -299,6 +283,7 @@ client.on('messageCreate', async (message) => {
 
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
+
     // Manejador de confirmación / rechazo de victoria (.win)
     if (interaction.customId.startsWith('confirm_win_') || interaction.customId.startsWith('reject_win_')) {
         const [accion, , ganadorId] = interaction.customId.split('_');
@@ -334,7 +319,7 @@ client.on('interactionCreate', async (interaction) => {
                     .setColor('#E74C3C')],
                 components: []
             });
-      }
+        }
         return;
     }
 
@@ -403,7 +388,7 @@ client.on('interactionCreate', async (interaction) => {
                 permissionOverwrites: overwrites
             });
 
-            partidasActivas.set(ch.id, { capitan1: cap1.id, capitan2: cap2.id, modalidad: id2 });
+            partidasActivas.set(ch.id, { capitan1: cap1.id, capitan2: cap2.id, modalidad: id2, iniciada: false });
 
             const embedInstrucciones = new EmbedBuilder()
                 .setTitle(`⚔️ ¡PARTIDA ENCONTRADA (${id2})!`)
