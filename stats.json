@@ -1,0 +1,48 @@
+{
+    "1473545081171480637": {
+        "coins": 14,
+        "jugadas": 2,
+        "ganadas": 2,
+        "rachaActual": 2,
+        "rachaMaxima": 2,
+        "historial": [
+            "🟢 Victoria vs <@1284592770878668852> (1v1) - 8/9/2026",
+            "🟢 Victoria vs <@1284592770878668852> (1v1) - 8/9/2026"
+        ]
+    },
+    "1284592770878668852": {
+        "coins": 0,
+        "jugadas": 2,
+        "ganadas": 0,
+        "rachaActual": 0,
+        "rachaMaxima": 0,
+        "historial": [
+            "🔴 Derrota vs <@1473545081171480637> (1v1) - 8/9/2026",
+            "🔴 Derrota vs <@1473545081171480637> (1v1) - 8/9/2026"
+        ]
+    },
+    "1482615728480714956": {
+        "coins": 100000,
+        "jugadas": 0,
+        "ganadas": 0,
+        "rachaActual": 0,
+        "rachaMaxima": 0,
+        "historial": []
+    },
+    "1009177704903491715": {
+        "coins": 100000,
+        "jugadas": 0,
+        "ganadas": 0,
+        "rachaActual": 0,
+        "rachaMaxima": 0,
+        "historial": []
+    },
+    "1425395347055710259": {
+        "coins": 100000,
+        "jugadas": 0,
+        "ganadas": 0,
+        "rachaActual": 0,
+        "rachaMaxima": 0,
+        "historial": []
+    }
+}
