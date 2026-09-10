@@ -248,12 +248,11 @@ client.on('messageCreate', async (message) => {
     if (command === '.win') {
         if (![capitan1, capitan2].includes(message.author.id)) return;
 
-        // Requiere obligatorio el .comenzar previo
-        if (!info.iniciada) {
+        let estado = estadoComienzo.get(message.channel.id) || new Set();
+        if (estado.size < 2 || !info.iniciada) {
             return enviarYBorrar(message.channel, { content: '❌ **No se puede usar .win.** Ambos capitanes deben presionar `.comenzar` primero.' });
         }
 
-        // Generar votación por botones
         const rivalId = message.author.id === capitan1 ? capitan2 : capitan1;
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId(`confirm_win_${message.author.id}`).setLabel('Confirmar Victoria').setStyle(ButtonStyle.Success).setEmoji('✅'),
@@ -284,7 +283,6 @@ client.on('messageCreate', async (message) => {
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
 
-    // Manejador de confirmación / rechazo de victoria (.win)
     if (interaction.customId.startsWith('confirm_win_') || interaction.customId.startsWith('reject_win_')) {
         const [accion, , ganadorId] = interaction.customId.split('_');
         const info = partidasActivas.get(interaction.channel.id);
@@ -294,7 +292,6 @@ client.on('interactionCreate', async (interaction) => {
         const rivalId = info.capitan1 === ganadorId ? info.capitan2 : info.capitan1;
         const esAdmin = esStaff(interaction.member);
 
-        // Solo el capitán rival o el Staff pueden interactuar
         if (interaction.user.id !== rivalId && !esAdmin) {
             return interaction.reply({ content: '❌ Solo el capitán rival o un Staff pueden responder a este reclamo.', ephemeral: true });
         }
