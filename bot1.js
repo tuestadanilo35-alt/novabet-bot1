@@ -8,8 +8,9 @@ const {
     PermissionsBitField, 
     ChannelType 
 } = require('discord.js');
-const fs = require('fs');
+const mongoose = require('mongoose');
 const http = require('http');
+const User = require('./User');
 
 const client = new Client({
     intents: [
@@ -23,35 +24,22 @@ const client = new Client({
 const ROL_CAPITAN_NOMBRE = 'Capitán';
 const ROLES_STAFF = ['ADMINS | NOVA BET', 'OWNERS | NOVA BET', 'ADM | FILA'];
 const CATEGORIA_PARTIDAS_ID = '1544471540215717939'; 
-const STATS_FILE = './stats.json';
 
 const colas = new Map();
 const partidasActivas = new Map();
 const estadoComienzo = new Map();
 
-function cargarStats() {
-    if (!fs.existsSync(STATS_FILE)) fs.writeFileSync(STATS_FILE, JSON.stringify({}, null, 4));
-    return JSON.parse(fs.readFileSync(STATS_FILE, 'utf-8'));
-}
+// Conexión a MongoDB Atlas
+mongoose.connect(process.env.MONGO_URI)
+    .then(() => console.log('✅ Base de datos MongoDB conectada en Bot 1.'))
+    .catch(err => console.error('❌ Error al conectar MongoDB:', err));
 
-function guardarStats(datos) {
-    fs.writeFileSync(STATS_FILE, JSON.stringify(datos, null, 4));
-}
-
-function obtenerOIniciarUsuario(userId, db) {
-    if (!db[userId]) {
-        db[userId] = { 
-            coins: 0, 
-            jugadas: 0, 
-            ganadas: 0, 
-            rachaActual: 0, 
-            rachaMaxima: 0, 
-            historial: [],
-            sanciones: [],
-            bloqueadoFilas: false
-        };
+async function obtenerOIniciarUsuario(userId) {
+    let usuario = await User.findOne({ userId });
+    if (!usuario) {
+        usuario = await User.create({ userId });
     }
-    return db[userId];
+    return usuario;
 }
 
 function esStaff(member) {
@@ -65,18 +53,18 @@ async function enviarYBorrar(channel, contenido) {
     } catch (e) {}
 }
 
-function registrarResultado(ganadorId, perdedorId, modalidad) {
-    const db = cargarStats();
+async function registrarResultado(ganadorId, perdedorId, modalidad) {
     const fecha = new Date().toLocaleDateString('es-ES');
 
-    const ganador = obtenerOIniciarUsuario(ganadorId, db);
-    const perdedor = obtenerOIniciarUsuario(perdedorId, db);
+    const ganador = await obtenerOIniciarUsuario(ganadorId);
+    const perdedor = await obtenerOIniciarUsuario(perdedorId);
 
     ganador.coins += 2;
     ganador.jugadas += 1;
     ganador.ganadas += 1;
     ganador.rachaActual += 1;
     if (ganador.rachaActual > ganador.rachaMaxima) ganador.rachaMaxima = ganador.rachaActual;
+    
     ganador.historial.unshift(`🟢 Victoria vs <@${perdedorId}> (${modalidad}) - ${fecha}`);
     if (ganador.historial.length > 5) ganador.historial.pop();
 
@@ -85,7 +73,9 @@ function registrarResultado(ganadorId, perdedorId, modalidad) {
     perdedor.historial.unshift(`🔴 Derrota vs <@${ganadorId}> (${modalidad}) - ${fecha}`);
     if (perdedor.historial.length > 5) perdedor.historial.pop();
 
-    guardarStats(db);
+    await ganador.save();
+    await perdedor.save();
+
     return ganador.coins;
 }
 
@@ -140,8 +130,7 @@ client.on('messageCreate', async (message) => {
 
     if (['.coins', '!coins'].includes(command)) {
         const u = message.mentions.users.first() || message.author;
-        const db = cargarStats();
-        const data = obtenerOIniciarUsuario(u.id, db);
+        const data = await obtenerOIniciarUsuario(u.id);
         await enviarYBorrar(message.channel, { content: `🪙 **${u.username}** tiene **${data.coins}** Coins.` });
         return message.delete().catch(() => {});
     }
@@ -151,10 +140,9 @@ client.on('messageCreate', async (message) => {
         const u = message.mentions.users.first();
         const cant = parseInt(args[2] || args[1]);
         if (u && !isNaN(cant)) {
-            const db = cargarStats();
-            const data = obtenerOIniciarUsuario(u.id, db);
+            const data = await obtenerOIniciarUsuario(u.id);
             data.coins += cant;
-            guardarStats(db);
+            await data.save();
             await enviarYBorrar(message.channel, { content: `✅ Se añadieron **${cant}** coins a **${u.username}**.` });
         }
         return message.delete().catch(() => {});
@@ -165,10 +153,9 @@ client.on('messageCreate', async (message) => {
         const u = message.mentions.users.first();
         const cant = parseInt(args[2] || args[1]);
         if (u && !isNaN(cant)) {
-            const db = cargarStats();
-            const data = obtenerOIniciarUsuario(u.id, db);
+            const data = await obtenerOIniciarUsuario(u.id);
             data.coins = Math.max(0, data.coins - cant);
-            guardarStats(db);
+            await data.save();
             await enviarYBorrar(message.channel, { content: `🔻 Se quitaron **${cant}** coins a **${u.username}**.` });
         }
         return message.delete().catch(() => {});
@@ -176,8 +163,7 @@ client.on('messageCreate', async (message) => {
 
     if (command === '.stats') {
         const u = message.mentions.users.first() || message.author;
-        const db = cargarStats();
-        const data = obtenerOIniciarUsuario(u.id, db);
+        const data = await obtenerOIniciarUsuario(u.id);
         const wr = data.jugadas > 0 ? ((data.ganadas / data.jugadas) * 100).toFixed(1) : '0.0';
 
         const embed = new EmbedBuilder()
@@ -198,8 +184,7 @@ client.on('messageCreate', async (message) => {
 
     if (command === '.historial') {
         const u = message.mentions.users.first() || message.author;
-        const db = cargarStats();
-        const data = obtenerOIniciarUsuario(u.id, db);
+        const data = await obtenerOIniciarUsuario(u.id);
         const hText = data.historial.length ? data.historial.join('\n') : '*Sin historial reciente.*';
 
         const embed = new EmbedBuilder().setTitle(`📜 HISTORIAL DE ${u.username.toUpperCase()}`).setDescription(hText).setColor('#3498DB');
@@ -207,7 +192,7 @@ client.on('messageCreate', async (message) => {
         return message.delete().catch(() => {});
     }
 
-    // COMANDOS DE TEXTO DENTRO DE LAS SALAS DE PARTIDA
+    // COMANDOS DENTRO DE LAS SALAS DE PARTIDA
     const info = partidasActivas.get(message.channel.id);
     if (!info) return;
 
@@ -297,7 +282,7 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         if (accion === 'confirm') {
-            const total = registrarResultado(ganadorId, rivalId, info.modalidad);
+            const total = await registrarResultado(ganadorId, rivalId, info.modalidad);
             await interaction.update({
                 embeds: [new EmbedBuilder()
                     .setTitle('🏆 VICTORIA CONFIRMADA')
@@ -325,10 +310,9 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.deferUpdate().catch(() => {});
 
         const u = interaction.user;
-        const db = cargarStats();
-        const usuarioData = db[u.id];
+        const usuarioData = await obtenerOIniciarUsuario(u.id);
 
-        if (id1 !== 'salir' && usuarioData && usuarioData.bloqueadoFilas) {
+        if (id1 !== 'salir' && usuarioData.bloqueadoFilas) {
             return interaction.followUp({ 
                 content: '🚫 **Acceso denegado.** Has acumulado sanciones activas y tienes bloqueado el acceso a las filas.', 
                 ephemeral: true 
