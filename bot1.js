@@ -216,21 +216,74 @@ client.on('messageCreate', async (message) => {
 
     if (command === '.comenzar') {
         if (![capitan1, capitan2].includes(message.author.id)) return;
-        await message.channel.send({ embeds: [new EmbedBuilder().setTitle('🚀 ¡PARTIDA INICIADA!').setColor('#2ECC71')] });
+
+        let estado = estadoComienzo.get(message.channel.id) || new Set();
+
+        if (estado.has(message.author.id)) {
+            return enviarYBorrar(message.channel, { content: '⚠️ Ya has marcado que estás listo.' });
+        }
+
+        estado.add(message.author.id);
+        estadoComienzo.set(message.channel.id, estado);
+
+        if (estado.size === 1) {
+            return message.channel.send({
+                embeds: [new EmbedBuilder()
+                    .setDescription(`⏳ **<@${message.author.id}>** está listo. Esperando al otro capitán...`)
+                    .setColor('#F1C40F')]
+            });
+        }
+
+        if (estado.size === 2) {
+            info.iniciada = true;
+            return message.channel.send({
+                embeds: [new EmbedBuilder()
+                    .setTitle('🚀 ¡PARTIDA INICIADA!')
+                    .setDescription('Ambos capitanes están listos. ¡Mucha suerte!')
+                    .setColor('#2ECC71')]
+            });
+        }
     }
 
     if (command === '.win') {
-        if (![capitan1, capitan2].includes(message.author.id)) return;
-        const perdedorId = message.author.id === capitan1 ? capitan2 : capitan1;
-        const total = registrarResultado(message.author.id, perdedorId, info.modalidad);
-        
-        await message.channel.send({ 
+        const staff = esStaff(message.member);
+
+        // Si NO es Staff, verificar acceso y estado de inicio
+        if (!staff) {
+            if (![capitan1, capitan2].includes(message.author.id)) return;
+            if (!info.iniciada) {
+                return enviarYBorrar(message.channel, { content: '❌ **No se puede usar .win.** Ambos capitanes deben presionar `.comenzar` primero.' });
+            }
+        }
+
+        // Si ES STAFF: Victoria directa instantánea
+        if (staff) {
+            const perdedorId = message.author.id === capitan1 ? capitan2 : capitan1;
+            const total = registrarResultado(message.author.id, perdedorId, info.modalidad);
+            await message.channel.send({
+                embeds: [new EmbedBuilder()
+                    .setTitle('🏆 VICTORIA OTORGADA (STAFF)')
+                    .setDescription(`Ganador: <@${message.author.id}> (+2 Coins, Total: ${total})\n\n🔒 *Eliminando canal...*`)
+                    .setColor('#2ECC71')]
+            });
+            return finalizarYBorrarCanal(message.channel);
+        }
+
+        // Si ES JUGADOR: Generar votación
+        const rivalId = message.author.id === capitan1 ? capitan2 : capitan1;
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId(`confirm_win_${message.author.id}`).setLabel('Confirmar Victoria').setStyle(ButtonStyle.Success).setEmoji('✅'),
+            new ButtonBuilder().setCustomId(`reject_win_${message.author.id}`).setLabel('Rechazar').setStyle(ButtonStyle.Danger).setEmoji('❌')
+        );
+
+        await message.channel.send({
+            content: `<@${rivalId}>`,
             embeds: [new EmbedBuilder()
-                .setTitle('🏆 VICTORIA CONFIRMADA')
-                .setDescription(`Ganador: <@${message.author.id}> (+2 Coins, Total: ${total})\n\n🔒 *Eliminando canal...*`)
-                .setColor('#2ECC71')] 
+                .setTitle('⚠️ RECLAMO DE VICTORIA')
+                .setDescription(`**<@${message.author.id}>** afirma haber ganado.\n<@${rivalId}>, ¿confirmas el resultado?`)
+                .setColor('#F39C12')],
+            components: [row]
         });
-        await finalizarYBorrarCanal(message.channel);
     }
 
     if (command === '.cancelar') {
@@ -246,8 +299,46 @@ client.on('messageCreate', async (message) => {
 
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
-    const [id1, id2] = interaction.customId.split('_');
+    // Manejador de confirmación / rechazo de victoria (.win)
+    if (interaction.customId.startsWith('confirm_win_') || interaction.customId.startsWith('reject_win_')) {
+        const [accion, , ganadorId] = interaction.customId.split('_');
+        const info = partidasActivas.get(interaction.channel.id);
 
+        if (!info) return;
+
+        const rivalId = info.capitan1 === ganadorId ? info.capitan2 : info.capitan1;
+        const esAdmin = esStaff(interaction.member);
+
+        // Solo el capitán rival o el Staff pueden interactuar
+        if (interaction.user.id !== rivalId && !esAdmin) {
+            return interaction.reply({ content: '❌ Solo el capitán rival o un Staff pueden responder a este reclamo.', ephemeral: true });
+        }
+
+        if (accion === 'confirm') {
+            const total = registrarResultado(ganadorId, rivalId, info.modalidad);
+            await interaction.update({
+                embeds: [new EmbedBuilder()
+                    .setTitle('🏆 VICTORIA CONFIRMADA')
+                    .setDescription(`Ganador: <@${ganadorId}> (+2 Coins, Total: ${total})\n\n🔒 *Eliminando canal...*`)
+                    .setColor('#2ECC71')],
+                components: []
+            });
+            return finalizarYBorrarCanal(interaction.channel);
+        }
+
+        if (accion === 'reject') {
+            await interaction.update({
+                embeds: [new EmbedBuilder()
+                    .setTitle('❌ VICTORIA RECHAZADA')
+                    .setDescription(`El reclamo ha sido rechazado por <@${interaction.user.id}>. Un miembro del Staff debe revisar el caso.`)
+                    .setColor('#E74C3C')],
+                components: []
+            });
+      }
+        return;
+    }
+
+    const [id1, id2] = interaction.customId.split('_');
     if (['f1', 'f2', 'f3', 'salir'].includes(id1)) {
         await interaction.deferUpdate().catch(() => {});
 
