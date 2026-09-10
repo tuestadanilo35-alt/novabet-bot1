@@ -9,6 +9,7 @@ const {
     ChannelType 
 } = require('discord.js');
 const fs = require('fs');
+const http = require('http');
 
 const client = new Client({
     intents: [
@@ -121,13 +122,14 @@ function crearBotonesFila(modalidad) {
     );
 }
 
-client.once('ready', () => console.log(`🤖 Bot 1 (Matchmaking + Bloqueo Sanciones) conectado como ${client.user.tag}`));
+client.once('ready', () => console.log(`🤖 Bot 1 conectado como ${client.user.tag}`));
 
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     const args = message.content.trim().split(/ +/);
     const command = args[0].toLowerCase();
 
+    // COMANDOS GLOBALES Y DE ADMIN
     if (command === '!setup-filas') {
         if (!esStaff(message.member)) return;
         for (const m of ['1v1', '2v2', '3v3', '4v4', '5v5', '6v6']) {
@@ -204,11 +206,47 @@ client.on('messageCreate', async (message) => {
         await enviarYBorrar(message.channel, { embeds: [embed] });
         return message.delete().catch(() => {});
     }
+
+    // COMANDOS DE TEXTO DENTRO DE LAS SALAS DE PARTIDA
+    const info = partidasActivas.get(message.channel.id);
+    if (!info) return;
+
+    const capitan1 = info.capitan1;
+    const capitan2 = info.capitan2;
+
+    if (command === '.comenzar') {
+        if (![capitan1, capitan2].includes(message.author.id)) return;
+        await message.channel.send({ embeds: [new EmbedBuilder().setTitle('🚀 ¡PARTIDA INICIADA!').setColor('#2ECC71')] });
+    }
+
+    if (command === '.win') {
+        if (![capitan1, capitan2].includes(message.author.id)) return;
+        const perdedorId = message.author.id === capitan1 ? capitan2 : capitan1;
+        const total = registrarResultado(message.author.id, perdedorId, info.modalidad);
+        
+        await message.channel.send({ 
+            embeds: [new EmbedBuilder()
+                .setTitle('🏆 VICTORIA CONFIRMADA')
+                .setDescription(`Ganador: <@${message.author.id}> (+2 Coins, Total: ${total})\n\n🔒 *Eliminando canal...*`)
+                .setColor('#2ECC71')] 
+        });
+        await finalizarYBorrarCanal(message.channel);
+    }
+
+    if (command === '.cancelar') {
+        if (![capitan1, capitan2].includes(message.author.id)) return;
+        await message.channel.send({ 
+            embeds: [new EmbedBuilder()
+                .setDescription('🚫 Partida cancelada por un capitán.\n\n🔒 *Eliminando canal...*')
+                .setColor('#E74C3C')] 
+        });
+        await finalizarYBorrarCanal(message.channel);
+    }
 });
 
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
-    const [id1, id2, arg1, arg2] = interaction.customId.split('_');
+    const [id1, id2] = interaction.customId.split('_');
 
     if (['f1', 'f2', 'f3', 'salir'].includes(id1)) {
         await interaction.deferUpdate().catch(() => {});
@@ -217,10 +255,9 @@ client.on('interactionCreate', async (interaction) => {
         const db = cargarStats();
         const usuarioData = db[u.id];
 
-        // VERIFICACIÓN DE BLOQUEO POR SANCIONES
         if (id1 !== 'salir' && usuarioData && usuarioData.bloqueadoFilas) {
             return interaction.followUp({ 
-                content: '🚫 **Acceso denegado.** Has acumulado 3 sanciones activas y tienes bloqueado el acceso a las filas de desafío.', 
+                content: '🚫 **Acceso denegado.** Has acumulado sanciones activas y tienes bloqueado el acceso a las filas.', 
                 ephemeral: true 
             });
         }
@@ -240,8 +277,6 @@ client.on('interactionCreate', async (interaction) => {
         if (ya || estado[key].length >= 2) return;
 
         estado[key].push(u);
-
-        // SIEMPRE actualizamos el mensaje cuando un usuario entra
         await interaction.message.edit({ embeds: [crearEmbedFila(id2)] });
 
         if (estado[key].length === 2) {
@@ -283,7 +318,6 @@ client.on('interactionCreate', async (interaction) => {
                 .setTitle(`⚔️ ¡PARTIDA ENCONTRADA (${id2})!`)
                 .setDescription(`🔴 **Capitán 1:** <@${cap1.id}>\n🔵 **Capitán 2:** <@${cap2.id}>\n\n` +
                     `📌 **COMANDOS DE LA SALA:**\n` +
-                    `• **\`.team @usuario\`**: Invita a un compañero a tu equipo.\n` +
                     `• **\`.comenzar\`**: Marca que tu equipo está listo.\n` +
                     `• **\`.win\`**: Solicita registrar la victoria.\n` +
                     `• **\`.cancelar\`**: Propone anular el enfrentamiento.\n\n` +
@@ -293,50 +327,11 @@ client.on('interactionCreate', async (interaction) => {
             await ch.send({ content: `<@${cap1.id}> <@${cap2.id}>`, embeds: [embedInstrucciones] });
         }
     }
-
-    if (id1 === 'team') {
-        if (interaction.user.id !== arg1) return interaction.reply({ content: '❌ No es para ti.', ephemeral: true });
-        if (id2 === 'aceptar') {
-            await interaction.channel.permissionOverwrites.edit(arg1, { ViewChannel: true, SendMessages: true });
-            await interaction.update({ embeds: [new EmbedBuilder().setDescription(`✅ <@${arg1}> unido al equipo.`)], components: [] });
-        } else {
-            await interaction.update({ embeds: [new EmbedBuilder().setDescription(`❌ Invitación rechazada.`)], components: [] });
-        }
-    }
-
-    if (id1 === 'comenzar' && id2 === 'listo') {
-        if (interaction.user.id !== arg2) return interaction.reply({ content: '❌ Solo el rival puede confirmar.', ephemeral: true });
-        estadoComienzo.delete(interaction.channel.id);
-        await interaction.update({ embeds: [new EmbedBuilder().setTitle('🚀 ¡PARTIDA INICIADA!').setColor('#2ECC71')], components: [] });
-    }
-
-    if (id1 === 'win') {
-        if (interaction.user.id !== arg2) return interaction.reply({ content: '❌ Solo el rival puede confirmar.', ephemeral: true });
-        if (id2 === 'aceptar') {
-            const info = partidasActivas.get(interaction.channel.id);
-            const total = registrarResultado(arg1, interaction.user.id, info ? info.modalidad : 'Normal');
-            await interaction.update({ embeds: [new EmbedBuilder().setTitle('🏆 VICTORIA CONFIRMADA').setDescription(`Ganador: <@${arg1}> (+2 Coins, Total: ${total})\n\n🔒 *Eliminando canal...*`).setColor('#2ECC71')], components: [] });
-            await finalizarYBorrarCanal(interaction.channel);
-        } else {
-            await interaction.update({ embeds: [new EmbedBuilder().setTitle('❌ VICTORIA IMPUGNADA').setColor('#E74C3C')], components: [] });
-        }
-    }
-
-    if (id1 === 'cancel') {
-        if (interaction.user.id !== arg2) return interaction.reply({ content: '❌ Solo el rival puede confirmar.', ephemeral: true });
-        if (id2 === 'aceptar') {
-            await interaction.update({ embeds: [new EmbedBuilder().setDescription('🚫 Partida cancelada.\n\n🔒 *Eliminando canal...*')], components: [] });
-            await finalizarYBorrarCanal(interaction.channel);
-        } else {
-            await interaction.update({ embeds: [new EmbedBuilder().setDescription('❌ Cancelación rechazada.')], components: [] });
-        }
-    }
 });
 
-client.login(process.env.TOKEN);
-
-const http = require('http');
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('Bot en linea 24/7');
 }).listen(process.env.PORT || 3000);
+
+client.login(process.env.TOKEN);
