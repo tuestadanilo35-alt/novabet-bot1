@@ -51,6 +51,7 @@ async function obtenerOIniciarUsuario(userId) {
         usuario = await User.create({ userId });
     }
     if (!Array.isArray(usuario.sanciones)) usuario.sanciones = [];
+    if (!Array.isArray(usuario.historial)) usuario.historial = [];
     if (usuario.bloqueadoFilas === undefined) usuario.bloqueadoFilas = false;
     return usuario;
 }
@@ -59,7 +60,7 @@ function esStaff(member) {
     return member.roles.cache.some(r => ROLES_STAFF.includes(r.name));
 }
 
-// Generador de Embed para cada modalidad
+// Generador de Embed para cada modalidad (Actualización en tiempo real)
 function generarEmbedModo(modo) {
     const filasModo = estadoFilas[modo];
     const renderFila = (num) => {
@@ -169,7 +170,6 @@ client.on('interactionCreate', async (interaction) => {
         const modo = partes[1];
         const numFila = partes[2];
 
-        // Capacidad necesaria para iniciar partida (ej. 1v1 = 2 jugadores, 5v5 = 10 jugadores)
         const numJugadoresPorEquipo = parseInt(modo.replace('v', '')) || 1;
         const limitePartida = numJugadoresPorEquipo * 2;
 
@@ -191,7 +191,7 @@ client.on('interactionCreate', async (interaction) => {
             return;
         }
 
-        // Actualizar el Embed inmediatamente
+        // Actualizar el Embed inmediatamente sin mensajes extras
         await interaction.update({ embeds: [generarEmbedModo(modo)], components: [obtenerBotonesModo(modo)] });
     }
 });
@@ -203,7 +203,71 @@ client.on('messageCreate', async (message) => {
     const args = message.content.trim().split(/ +/);
     const command = args[0].toLowerCase();
 
-    // COMANDO PARA GENERAR TODOS LOS PANELES DE GOLPE
+    // ==========================================
+    // COMANDOS DE ESTADÍSTICAS Y CONSULTA DE COINS
+    // ==========================================
+
+    // COMANDO !coins
+    if (command === '!coins') {
+        const objetivo = message.mentions.users.first() || message.author;
+        const pData = await obtenerOIniciarUsuario(objetivo.id);
+
+        const embedCoins = new EmbedBuilder()
+            .setTitle(`💰 Balance de Coins`)
+            .setDescription(`👤 **Usuario:** <@${objetivo.id}>\n🪙 **Coins:** \`${pData.coins || 0}\``)
+            .setColor('#F1C40F');
+
+        return message.channel.send({ embeds: [embedCoins] });
+    }
+
+    // COMANDO !stats O !perfil
+    if (command === '!stats' || command === '!perfil') {
+        const objetivo = message.mentions.users.first() || message.author;
+        const pData = await obtenerOIniciarUsuario(objetivo.id);
+
+        const totalJugadas = pData.jugadas || 0;
+        const victorias = pData.ganadas || 0;
+        const derrotas = totalJugadas - victorias;
+        const winrate = totalJugadas > 0 ? ((victorias / totalJugadas) * 100).toFixed(1) : '0.0';
+
+        const embedStats = new EmbedBuilder()
+            .setTitle(`📊 Estadísticas de ${objetivo.username}`)
+            .setDescription(
+                `👤 **Jugador:** <@${objetivo.id}>\n` +
+                `🪙 **Coins:** \`${pData.coins || 0}\`\n\n` +
+                `🎮 **Partidas Jugadas:** \`${totalJugadas}\`\n` +
+                `🏆 **Victorias:** \`${victorias}\`\n` +
+                `💀 **Derrotas:** \`${derrotas < 0 ? 0 : derrotas}\`\n` +
+                `📈 **Winrate:** \`${winrate}%\``
+            )
+            .setColor('#3498DB');
+
+        return message.channel.send({ embeds: [embedStats] });
+    }
+
+    // COMANDO !historial
+    if (command === '!historial') {
+        const objetivo = message.mentions.users.first() || message.author;
+        const pData = await obtenerOIniciarUsuario(objetivo.id);
+
+        if (!pData.historial || pData.historial.length === 0) {
+            return message.channel.send(`📋 <@${objetivo.id}> no tiene partidas registradas en el historial.`);
+        }
+
+        const ultimasPartidas = pData.historial.slice(-5).reverse().map((h, i) => {
+            const resEmoji = h.resultado === 'Victoria' ? '🏆' : '❌';
+            return `**${i + 1}.** ${resEmoji} **${h.resultado}** | Modo: \`${h.modo || 'N/A'}\` | Coins: \`+${h.coinsObtenidas || 0}\``;
+        }).join('\n');
+
+        const embedHistorial = new EmbedBuilder()
+            .setTitle(`📜 Historial Reciente de ${objetivo.username}`)
+            .setDescription(ultimasPartidas)
+            .setColor('#9B59B6');
+
+        return message.channel.send({ embeds: [embedHistorial] });
+    }
+
+    // COMANDO PANEL DE FILAS (GENERA LOS 6 DE GOLPE)
     if (command === '.panel-filas' || command === '.setup-filas') {
         if (!esStaff(message.member)) return message.channel.send('❌ Solo el Staff puede enviar el panel.');
         message.delete().catch(() => {});
@@ -290,7 +354,7 @@ client.on('messageCreate', async (message) => {
         return message.channel.send('🚀 **¡La partida ha comenzado oficialmente!** Buena suerte.');
     }
 
-    // COMANDO .win
+    // COMANDO .win (OTORGA 2 COINS Y REGISTRA HISTORIAL)
     if (command === '.win' || command === '.ganador') {
         const esCap1 = message.author.id === infoPartida.capitan1;
         const esCap2 = message.author.id === infoPartida.capitan2;
@@ -322,17 +386,31 @@ client.on('messageCreate', async (message) => {
                     return i.reply({ content: '❌ No tienes permisos para confirmar esta victoria.', ephemeral: true });
                 }
 
+                // Actualizar stats e historial del equipo ganador
                 for (const uId of equipoGanador) {
                     const pData = await obtenerOIniciarUsuario(uId);
                     pData.coins += 2;
                     pData.ganadas += 1;
                     pData.jugadas += 1;
+                    pData.historial.push({
+                        resultado: 'Victoria',
+                        modo: infoPartida.modo,
+                        coinsObtenidas: 2,
+                        fecha: new Date()
+                    });
                     await pData.save();
                 }
 
+                // Actualizar stats e historial del equipo perdedor
                 for (const uId of equipoPerdedor) {
                     const pData = await obtenerOIniciarUsuario(uId);
                     pData.jugadas += 1;
+                    pData.historial.push({
+                        resultado: 'Derrota',
+                        modo: infoPartida.modo,
+                        coinsObtenidas: 0,
+                        fecha: new Date()
+                    });
                     await pData.save();
                 }
 
@@ -358,7 +436,7 @@ client.on('messageCreate', async (message) => {
     }
 });
 
-// Servidor HTTP para Render
+// Servidor HTTP para mantener activo Render
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('Bot 1 en linea 24/7');
