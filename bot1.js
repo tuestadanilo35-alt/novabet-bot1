@@ -22,32 +22,23 @@ const client = new Client({
     ]
 });
 
-// ROLES Y CONFIGURACIÓN
+// CONFIGURACIÓN DE ROLES Y CATEGORÍA
 const ROLES_STAFF = ['ADMINS | NOVA BET', 'OWNERS | NOVA BET', 'ADM | FILA'];
 const CATEGORIA_FILAS_ID = 'AQUÍ_ID_CATEGORIA_PARTIDAS';
 
-// Configuración de las modalidades (1v1 a 6v6)
-const MODALIDADES = {
-    '1v1': 1,
-    '2v2': 2,
-    '3v3': 3,
-    '4v4': 4,
-    '5v5': 5,
-    '6v6': 6
+// Estado global de las filas dinámicas
+const filasDinamicas = {
+    '1': [],
+    '2': [],
+    '3': []
 };
 
-const filas = {
-    '1v1': [],
-    '2v2': [],
-    '3v3': [],
-    '4v4': [],
-    '5v5': [],
-    '6v6': []
-};
-
+// Configuración por defecto del panel (5v5 como la captura)
+let modoActual = '5v5'; 
+let limiteJugadoresPorFila = 10; // 5v5 = 10 jugadores por fila para armar la partida
 const partidasActivas = new Map();
 
-// Conexión a MongoDB Atlas
+// Conexión a MongoDB
 mongoose.connect(process.env.MONGO_URI)
     .then(() => console.log('✅ Base de datos MongoDB conectada en Bot 1.'))
     .catch(err => console.error('❌ Error al conectar MongoDB:', err));
@@ -66,140 +57,168 @@ function esStaff(member) {
     return member.roles.cache.some(r => ROLES_STAFF.includes(r.name));
 }
 
-// Función central para meter usuarios a las filas y crear partidas
-async function procesarEntradaFila(userId, modo, guild, sendChannel) {
-    const pData = await obtenerOIniciarUsuario(userId);
+// Generador del Embed idéntico a la imagen recibida
+function generarEmbedFilas(modo = '5v5') {
+    const renderFila = (num) => {
+        const lista = filasDinamicas[num];
+        const count = lista.length;
+        if (count === 0) {
+            return `*Vacía*`;
+        }
+        return lista.map(id => `<@${id}>`).join(' ');
+    };
 
-    if (pData.bloqueadoFilas) {
-        return sendChannel.send(`🚫 <@${userId}>, estás bloqueado de las filas por acumular 3 sanciones.`);
-    }
-
-    const capacidadPorEquipo = MODALIDADES[modo];
-    const filaActual = filas[modo];
-
-    if (filaActual.includes(userId)) {
-        return sendChannel.send(`⚠️ <@${userId}>, ya estás anotado en la fila de **${modo.toUpperCase()}**.`);
-    }
-
-    filaActual.push(userId);
-    sendChannel.send(`✅ <@${userId}> se unió a la fila **${modo.toUpperCase()}** (${filaActual.length}/${capacidadPorEquipo * 2}).`);
-
-    // Crear la partida al completarse los cupos
-    if (filaActual.length === capacidadPorEquipo * 2) {
-        const capitanes = [...filaActual];
-        filas[modo] = []; 
-
-        const cap1 = capitanes[0];
-        const cap2 = capitanes[1];
-
-        const overwrites = [
-            { id: guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
-            { id: cap1, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] },
-            { id: cap2, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] }
-        ];
-
-        guild.roles.cache.forEach(r => {
-            if (ROLES_STAFF.includes(r.name)) {
-                overwrites.push({ id: r.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] });
-            }
-        });
-
-        const ch = await guild.channels.create({
-            name: `🎮-partida-${modo}-${cap1}`,
-            type: ChannelType.GuildText,
-            parent: CATEGORIA_FILAS_ID !== 'AQUÍ_ID_CATEGORIA_PARTIDAS' ? CATEGORIA_FILAS_ID : null,
-            permissionOverwrites: overwrites
-        });
-
-        partidasActivas.set(ch.id, {
-            modo: modo,
-            capitan1: cap1,
-            capitan2: cap2,
-            equipo1: [cap1],
-            equipo2: [cap2],
-            capacidadPorEquipo: capacidadPorEquipo,
-            iniciada: false
-        });
-
-        const embedInstrucciones = new EmbedBuilder()
-            .setTitle(`🎮 PARTIDA DE HABILIDAD: ${modo.toUpperCase()}`)
-            .setDescription(`🥊 **Capitán 1:** <@${cap1}>\n🥊 **Capitán 2:** <@${cap2}>\n\n` +
-                `📌 **INSTRUCCIONES:**\n` +
-                (capacidadPorEquipo > 1 ? `1️⃣ **.team @jugador**: Invita integrantes a tu equipo (Solo capitanes).\n` : '') +
-                `2️⃣ **.comenzar**: Ambos capitanes ejecutan para iniciar.\n` +
-                `3️⃣ **.win**: El capitán ganador reclama la victoria al finalizar.`)
-            .setColor('#3498DB');
-
-        await ch.send({ content: `<@${cap1}> <@${cap2}>`, embeds: [embedInstrucciones] });
-    }
+    return new EmbedBuilder()
+        .setTitle(`${modo} | ¿Buscando Partida?`)
+        .setDescription(
+            `Unite a una de las **3 filas** de **${modo}** haciendo clic en los botones de abajo.\n\n` +
+            `🏆 **Formato**\n${modo} Normal\n\n` +
+            `🟢 **Fila 1 — ${filasDinamicas['1'].length} jugador(es)**\n${renderFila('1')}\n\n` +
+            `🟡 **Fila 2 — ${filasDinamicas['2'].length} jugador(es)**\n${renderFila('2')}\n\n` +
+            `🔵 **Fila 3 — ${filasDinamicas['3'].length} jugador(es)**\n${renderFila('3')}`
+        )
+        .setColor('#2ECC71');
 }
 
-client.once('ready', () => console.log(`🤖 Bot 1 (Filas y Modalidades) conectado como ${client.user.tag}`));
+function obtenerBotonesPanel() {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('fila_1').setLabel('Fila 1').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('fila_2').setLabel('Fila 2').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('fila_3').setLabel('Fila 3').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('salir_fila').setLabel('❌ Salir de la fila').setStyle(ButtonStyle.Danger)
+    );
+}
 
+// Crear sala al completarse los cupos
+async function crearSalaDePartida(jugadores, modo, guild) {
+    const cap1 = jugadores[0];
+    const cap2 = jugadores[1];
+    const capacidadPorEquipo = Math.ceil(jugadores.length / 2);
+
+    const overwrites = [
+        { id: guild.id, deny: [PermissionsBitField.Flags.ViewChannel] }
+    ];
+
+    jugadores.forEach(id => {
+        overwrites.push({ id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] });
+    });
+
+    guild.roles.cache.forEach(r => {
+        if (ROLES_STAFF.includes(r.name)) {
+            overwrites.push({ id: r.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] });
+        }
+    });
+
+    const ch = await guild.channels.create({
+        name: `🎮-partida-${modo}-${cap1}`,
+        type: ChannelType.GuildText,
+        parent: CATEGORIA_FILAS_ID !== 'AQUÍ_ID_CATEGORIA_PARTIDAS' ? CATEGORIA_FILAS_ID : null,
+        permissionOverwrites: overwrites
+    });
+
+    partidasActivas.set(ch.id, {
+        modo: modo,
+        capitan1: cap1,
+        capitan2: cap2,
+        equipo1: [cap1],
+        equipo2: [cap2],
+        capacidadPorEquipo: capacidadPorEquipo,
+        iniciada: false
+    });
+
+    const embedInstrucciones = new EmbedBuilder()
+        .setTitle(`🎮 PARTIDA DE HABILIDAD: ${modo.toUpperCase()}`)
+        .setDescription(`🥊 **Capitán 1:** <@${cap1}>\n🥊 **Capitán 2:** <@${cap2}>\n\n` +
+            `📌 **INSTRUCCIONES:**\n` +
+            (capacidadPorEquipo > 1 ? `1️⃣ **.team @jugador**: Invita integrantes a tu equipo (Solo capitanes).\n` : '') +
+            `2️⃣ **.comenzar**: Ambos capitanes ejecutan para iniciar.\n` +
+            `3️⃣ **.win**: El capitán ganador reclama la victoria al finalizar.`)
+        .setColor('#3498DB');
+
+    await ch.send({ content: jugadores.map(id => `<@${id}>`).join(' '), embeds: [embedInstrucciones] });
+}
+
+client.once('ready', () => console.log(`🤖 Bot 1 conectado como ${client.user.tag}`));
+
+// MANEJO DE BOTONES (SIN MENSAJES EXTRA, ACTUALIZACIÓN VISUAL DIRECTA)
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isButton()) return;
+
+    const { customId, user, guild } = interaction;
+    const userId = user.id;
+
+    // Verificar si el usuario está sancionado/bloqueado
+    const pData = await obtenerOIniciarUsuario(userId);
+    if (pData.bloqueadoFilas) {
+        return interaction.reply({ content: '🚫 Estás bloqueado de las filas por acumular sanciones.', ephemeral: true });
+    }
+
+    // BOTÓN DE SALIR
+    if (customId === 'salir_fila') {
+        for (const num in filasDinamicas) {
+            const idx = filasDinamicas[num].indexOf(userId);
+            if (idx !== -1) {
+                filasDinamicas[num].splice(idx, 1);
+            }
+        }
+        await interaction.update({ embeds: [generarEmbedFilas(modoActual)], components: [obtenerBotonesPanel()] });
+        return;
+    }
+
+    // BOTONES DE FILA (Fila 1, Fila 2, Fila 3)
+    const numFila = customId.replace('fila_', '');
+    if (filasDinamicas[numFila]) {
+        // Remover de cualquier otra fila previa
+        for (const n in filasDinamicas) {
+            const idx = filasDinamicas[n].indexOf(userId);
+            if (idx !== -1) filasDinamicas[n].splice(idx, 1);
+        }
+
+        // Agregar a la fila seleccionada
+        filasDinamicas[numFila].push(userId);
+
+        // Si se completa la fila para armar la partida
+        if (filasDinamicas[numFila].length >= limiteJugadoresPorFila) {
+            const jugadoresPartida = [...filasDinamicas[numFila]];
+            filasDinamicas[numFila] = []; // Limpiar fila
+            await interaction.update({ embeds: [generarEmbedFilas(modoActual)], components: [obtenerBotonesPanel()] });
+            await crearSalaDePartida(jugadoresPartida, modoActual, guild);
+            return;
+        }
+
+        // Actualizar silenciosamente el panel visual
+        await interaction.update({ embeds: [generarEmbedFilas(modoActual)], components: [obtenerBotonesPanel()] });
+    }
+});
+
+// COMANDOS DENTRO DE LOS CANALES Y CHAT
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
 
     const args = message.content.trim().split(/ +/);
     const command = args[0].toLowerCase();
 
-    // COMANDO STAFF PARA MANDAR EL PANEL DE FILAS CON BOTONES
+    // COMANDO PARA CREAR EL PANEL EN EL CANAL (#FILAS)
     if (command === '.panel-filas' || command === '.setup-filas') {
         if (!esStaff(message.member)) return message.channel.send('❌ Solo el Staff puede enviar este panel.');
         message.delete().catch(() => {});
 
-        const embedPanel = new EmbedBuilder()
-            .setTitle('🎮 SALA DE FILAS DE HABILIDAD')
-            .setDescription('Haz clic en el botón de la modalidad que deseas jugar para entrar a la fila.\n\n🏆 **Recompensa:** 2 Coins por integrante en el equipo ganador.')
-            .setColor('#3498DB');
+        modoActual = args[1] ? args[1].toLowerCase() : '5v5';
+        const numModo = parseInt(modoActual.replace('v', '')) || 5;
+        limiteJugadoresPorFila = numModo * 2;
 
-        const fila1 = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('unirse_1v1').setLabel('1v1').setStyle(ButtonStyle.Primary),
-            new ButtonBuilder().setCustomId('unirse_2v2').setLabel('2v2').setStyle(ButtonStyle.Primary),
-            new ButtonBuilder().setCustomId('unirse_3v3').setLabel('3v3').setStyle(ButtonStyle.Primary)
-        );
-        const fila2 = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('unirse_4v4').setLabel('4v4').setStyle(ButtonStyle.Primary),
-            new ButtonBuilder().setCustomId('unirse_5v5').setLabel('5v5').setStyle(ButtonStyle.Primary),
-            new ButtonBuilder().setCustomId('unirse_6v6').setLabel('6v6').setStyle(ButtonStyle.Primary)
-        );
-        const fila3 = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('salir_fila').setLabel('🚪 Salir de la Fila').setStyle(ButtonStyle.Danger)
-        );
-
-        return message.channel.send({ embeds: [embedPanel], components: [fila1, fila2, fila3] });
-    }
-
-    // ENTRADA A FILAS VÍA COMANDO ESCRITO (.1v1, .2v2, ..., .6v6)
-    if (MODALIDADES[command.substring(1)]) {
-        const modo = command.substring(1);
-        await procesarEntradaFila(message.author.id, modo, message.guild, message.channel);
-        return;
-    }
-
-    // SALIR DE LAS FILAS
-    if (command === '.salir') {
-        let salio = false;
-        for (const modo in filas) {
-            const idx = filas[modo].indexOf(message.author.id);
-            if (idx !== -1) {
-                filas[modo].splice(idx, 1);
-                salio = true;
-                message.channel.send(`🚪 <@${message.author.id}> salió de la fila de **${modo.toUpperCase()}**.`);
-            }
-        }
-        if (!salio) message.channel.send('❌ No estás en ninguna fila activa.');
-        return;
+        return message.channel.send({ embeds: [generarEmbedFilas(modoActual)], components: [obtenerBotonesPanel()] });
     }
 
     // ==========================================
-    // DENTRO DEL CANAL DE LA PARTIDA
+    // COMANDOS DE LA PARTIDA (.team, .comenzar, .win)
     // ==========================================
 
     if (!message.channel.name.startsWith('🎮-partida-')) return;
     const infoPartida = partidasActivas.get(message.channel.id);
     if (!infoPartida) return;
 
-    // COMANDO .team (INVITACIÓN INTERACTIVA)
+    // COMANDO .team
     if (command === '.team') {
         if (infoPartida.iniciada) return message.channel.send('❌ La partida ya ha comenzado.');
 
@@ -264,7 +283,7 @@ client.on('messageCreate', async (message) => {
         return message.channel.send('🚀 **¡La partida ha comenzado oficialmente!** Buena suerte.');
     }
 
-    // COMANDO .win (2 COINS PARA CADA INTEGRANTE DEL EQUIPO GANADOR)
+    // COMANDO .win (2 COINS POR INTEGRANTE DEL EQUIPO GANADOR)
     if (command === '.win' || command === '.ganador') {
         const esCap1 = message.author.id === infoPartida.capitan1;
         const esCap2 = message.author.id === infoPartida.capitan2;
@@ -283,7 +302,7 @@ client.on('messageCreate', async (message) => {
         const embedWinMsg = new EmbedBuilder()
             .setTitle('🏆 DECLARACIÓN DE VICTORIA')
             .setDescription(`El capitán <@${message.author.id}> reclama la victoria para el **Equipo ${numGanador}**.\n\n` +
-                `❓ **¿Confirmar resultado y entregar 2 Coins a cada capitán e integrante?**`)
+                `❓ **¿Confirmar resultado y entregar 2 Coins a cada integrante del equipo ganador?**`)
             .setColor('#2ECC71');
 
         const msgWin = await message.channel.send({ embeds: [embedWinMsg], components: [rowWin] });
@@ -329,46 +348,6 @@ client.on('messageCreate', async (message) => {
             }
         });
         return;
-    }
-});
-
-// ESCUCHADOR DE INTERACCIONES DE BOTONES (COMPATIBILIDAD CON PANALES NUEVOS Y VIEJOS)
-client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isButton()) return;
-
-    const { customId, user, guild, channel } = interaction;
-
-    // Responde inmediatamente a la API de Discord para evitar "La aplicación no ha respondido"
-    await interaction.deferUpdate().catch(() => {});
-
-    // Mapeo flexible para reconocer botones tanto viejos como nuevos
-    let modo = null;
-    if (customId.includes('1v1') || customId === 'fila_1') modo = '1v1';
-    else if (customId.includes('2v2') || customId === 'fila_2') modo = '2v2';
-    else if (customId.includes('3v3') || customId === 'fila_3') modo = '3v3';
-    else if (customId.includes('4v4')) modo = '4v4';
-    else if (customId.includes('5v5')) modo = '5v5';
-    else if (customId.includes('6v6')) modo = '6v6';
-
-    if (modo) {
-        await procesarEntradaFila(user.id, modo, guild, channel);
-        return;
-    }
-
-    if (customId.includes('salir')) {
-        let salio = false;
-        for (const m in filas) {
-            const idx = filas[m].indexOf(user.id);
-            if (idx !== -1) {
-                filas[m].splice(idx, 1);
-                salio = true;
-            }
-        }
-        if (salio) {
-            return interaction.followUp({ content: '🚪 Has salido de la fila correctamente.', ephemeral: true }).catch(() => {});
-        } else {
-            return interaction.followUp({ content: '❌ No estás anotado en ninguna fila.', ephemeral: true }).catch(() => {});
-        }
     }
 });
 
