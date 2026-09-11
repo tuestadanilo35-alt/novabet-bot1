@@ -66,6 +66,74 @@ function esStaff(member) {
     return member.roles.cache.some(r => ROLES_STAFF.includes(r.name));
 }
 
+// Función central para meter usuarios a las filas y crear partidas
+async function procesarEntradaFila(userId, modo, guild, sendChannel) {
+    const pData = await obtenerOIniciarUsuario(userId);
+
+    if (pData.bloqueadoFilas) {
+        return sendChannel.send(`🚫 <@${userId}>, estás bloqueado de las filas por acumular 3 sanciones.`);
+    }
+
+    const capacidadPorEquipo = MODALIDADES[modo];
+    const filaActual = filas[modo];
+
+    if (filaActual.includes(userId)) {
+        return sendChannel.send(`⚠️ <@${userId}>, ya estás anotado en la fila de **${modo.toUpperCase()}**.`);
+    }
+
+    filaActual.push(userId);
+    sendChannel.send(`✅ <@${userId}> se unió a la fila **${modo.toUpperCase()}** (${filaActual.length}/${capacidadPorEquipo * 2}).`);
+
+    // Crear la partida al completarse los cupos
+    if (filaActual.length === capacidadPorEquipo * 2) {
+        const capitanes = [...filaActual];
+        filas[modo] = []; 
+
+        const cap1 = capitanes[0];
+        const cap2 = capitanes[1];
+
+        const overwrites = [
+            { id: guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
+            { id: cap1, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] },
+            { id: cap2, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] }
+        ];
+
+        guild.roles.cache.forEach(r => {
+            if (ROLES_STAFF.includes(r.name)) {
+                overwrites.push({ id: r.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] });
+            }
+        });
+
+        const ch = await guild.channels.create({
+            name: `🎮-partida-${modo}-${cap1}`,
+            type: ChannelType.GuildText,
+            parent: CATEGORIA_FILAS_ID !== 'AQUÍ_ID_CATEGORIA_PARTIDAS' ? CATEGORIA_FILAS_ID : null,
+            permissionOverwrites: overwrites
+        });
+
+        partidasActivas.set(ch.id, {
+            modo: modo,
+            capitan1: cap1,
+            capitan2: cap2,
+            equipo1: [cap1],
+            equipo2: [cap2],
+            capacidadPorEquipo: capacidadPorEquipo,
+            iniciada: false
+        });
+
+        const embedInstrucciones = new EmbedBuilder()
+            .setTitle(`🎮 PARTIDA DE HABILIDAD: ${modo.toUpperCase()}`)
+            .setDescription(`🥊 **Capitán 1:** <@${cap1}>\n🥊 **Capitán 2:** <@${cap2}>\n\n` +
+                `📌 **INSTRUCCIONES:**\n` +
+                (capacidadPorEquipo > 1 ? `1️⃣ **.team @jugador**: Invita integrantes a tu equipo (Solo capitanes).\n` : '') +
+                `2️⃣ **.comenzar**: Ambos capitanes ejecutan para iniciar.\n` +
+                `3️⃣ **.win**: El capitán ganador reclama la victoria al finalizar.`)
+            .setColor('#3498DB');
+
+        await ch.send({ content: `<@${cap1}> <@${cap2}>`, embeds: [embedInstrucciones] });
+    }
+}
+
 client.once('ready', () => console.log(`🤖 Bot 1 (Filas y Modalidades) conectado como ${client.user.tag}`));
 
 client.on('messageCreate', async (message) => {
@@ -74,81 +142,41 @@ client.on('messageCreate', async (message) => {
     const args = message.content.trim().split(/ +/);
     const command = args[0].toLowerCase();
 
-    // ==========================================
-    // SISTEMA DE FILAS DE HABILIDADES (.1v1, .2v2, ..., .6v6)
-    // ==========================================
+    // COMANDO STAFF PARA MANDAR EL PANEL DE FILAS CON BOTONES
+    if (command === '.panel-filas' || command === '.setup-filas') {
+        if (!esStaff(message.member)) return message.channel.send('❌ Solo el Staff puede enviar este panel.');
+        message.delete().catch(() => {});
 
+        const embedPanel = new EmbedBuilder()
+            .setTitle('🎮 SALA DE FILAS DE HABILIDAD')
+            .setDescription('Haz clic en el botón de la modalidad que deseas jugar para entrar a la fila.\n\n🏆 **Recompensa:** 2 Coins por integrante en el equipo ganador.')
+            .setColor('#3498DB');
+
+        const fila1 = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('unirse_1v1').setLabel('1v1').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('unirse_2v2').setLabel('2v2').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('unirse_3v3').setLabel('3v3').setStyle(ButtonStyle.Primary)
+        );
+        const fila2 = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('unirse_4v4').setLabel('4v4').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('unirse_5v5').setLabel('5v5').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('unirse_6v6').setLabel('6v6').setStyle(ButtonStyle.Primary)
+        );
+        const fila3 = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('salir_fila').setLabel('🚪 Salir de la Fila').setStyle(ButtonStyle.Danger)
+        );
+
+        return message.channel.send({ embeds: [embedPanel], components: [fila1, fila2, fila3] });
+    }
+
+    // ENTRADA A FILAS VÍA COMANDO ESCRITO (.1v1, .2v2, ..., .6v6)
     if (MODALIDADES[command.substring(1)]) {
         const modo = command.substring(1);
-        const pData = await obtenerOIniciarUsuario(message.author.id);
-
-        if (pData.bloqueadoFilas) {
-            return message.channel.send(`🚫 <@${message.author.id}>, estás bloqueado de las filas por acumular 3 sanciones.`);
-        }
-
-        const capacidadPorEquipo = MODALIDADES[modo];
-        const filaActual = filas[modo];
-
-        if (filaActual.includes(message.author.id)) {
-            return message.channel.send(`⚠️ Ya estás anotado en la fila de **${modo.toUpperCase()}**.`);
-        }
-
-        filaActual.push(message.author.id);
-        message.channel.send(`✅ <@${message.author.id}> se unió a la fila **${modo.toUpperCase()}** (${filaActual.length}/${capacidadPorEquipo * 2}).`);
-
-        // Crear la partida cuando se completa la fila
-        if (filaActual.length === capacidadPorEquipo * 2) {
-            const capitanes = [...filaActual];
-            filas[modo] = []; // Reiniciar la fila
-
-            const cap1 = capitanes[0];
-            const cap2 = capitanes[1];
-
-            const guild = message.guild;
-            const overwrites = [
-                { id: guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
-                { id: cap1, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] },
-                { id: cap2, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] }
-            ];
-
-            guild.roles.cache.forEach(r => {
-                if (ROLES_STAFF.includes(r.name)) {
-                    overwrites.push({ id: r.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] });
-                }
-            });
-
-            const ch = await guild.channels.create({
-                name: `🎮-partida-${modo}-${message.author.username}`,
-                type: ChannelType.GuildText,
-                parent: CATEGORIA_FILAS_ID !== 'AQUÍ_ID_CATEGORIA_PARTIDAS' ? CATEGORIA_FILAS_ID : null,
-                permissionOverwrites: overwrites
-            });
-
-            partidasActivas.set(ch.id, {
-                modo: modo,
-                capitan1: cap1,
-                capitan2: cap2,
-                equipo1: [cap1],
-                equipo2: [cap2],
-                capacidadPorEquipo: capacidadPorEquipo,
-                iniciada: false
-            });
-
-            const embedInstrucciones = new EmbedBuilder()
-                .setTitle(`🎮 PARTIDA DE HABILIDAD: ${modo.toUpperCase()}`)
-                .setDescription(`🥊 **Capitán 1:** <@${cap1}>\n🥊 **Capitán 2:** <@${cap2}>\n\n` +
-                    `📌 **INSTRUCCIONES:**\n` +
-                    (capacidadPorEquipo > 1 ? `1️⃣ **.team @jugador**: Invita a un compañero a tu equipo (Solo capitanes).\n` : '') +
-                    `2️⃣ **.comenzar**: Ambos capitanes ejecutan para iniciar.\n` +
-                    `3️⃣ **.win**: El capitán ganador reclama la victoria al finalizar.`)
-                .setColor('#3498DB');
-
-            await ch.send({ content: `<@${cap1}> <@${cap2}>`, embeds: [embedInstrucciones] });
-        }
+        await procesarEntradaFila(message.author.id, modo, message.guild, message.channel);
         return;
     }
 
-    // COMANDO PARA SALIR DE LA FILA (.salir)
+    // SALIR DE LAS FILAS
     if (command === '.salir') {
         let salio = false;
         for (const modo in filas) {
@@ -164,43 +192,35 @@ client.on('messageCreate', async (message) => {
     }
 
     // ==========================================
-    // ACCIONES DENTRO DEL CANAL DE LA PARTIDA
+    // DENTRO DEL CANAL DE LA PARTIDA
     // ==========================================
 
     if (!message.channel.name.startsWith('🎮-partida-')) return;
     const infoPartida = partidasActivas.get(message.channel.id);
     if (!infoPartida) return;
 
-    // COMANDO .team (INVITACIÓN EN EL MISMO CANAL)
+    // COMANDO .team (INVITACIÓN INTERACTIVA)
     if (command === '.team') {
         if (infoPartida.iniciada) return message.channel.send('❌ La partida ya ha comenzado.');
 
         const esCap1 = message.author.id === infoPartida.capitan1;
         const esCap2 = message.author.id === infoPartida.capitan2;
 
-        if (!esCap1 && !esCap2) {
-            return message.channel.send('❌ Solo los capitanes del equipo pueden invitar integrantes.');
-        }
+        if (!esCap1 && !esCap2) return message.channel.send('❌ Solo los capitanes del equipo pueden invitar integrantes.');
 
         const compañero = message.mentions.users.first();
         if (!compañero || compañero.bot) return message.channel.send('❌ Etiqueta a un jugador válido. Uso: `.team @usuario`');
 
         const equipoDelCapitan = esCap1 ? infoPartida.equipo1 : infoPartida.equipo2;
 
-        if (equipoDelCapitan.length >= infoPartida.capacidadPorEquipo) {
-            return message.channel.send(`❌ Tu equipo ya está completo (${infoPartida.capacidadPorEquipo}/${infoPartida.capacidadPorEquipo}).`);
-        }
-
-        if (infoPartida.equipo1.includes(compañero.id) || infoPartida.equipo2.includes(compañero.id)) {
-            return message.channel.send('❌ El usuario ya forma parte de esta partida.');
-        }
+        if (equipoDelCapitan.length >= infoPartida.capacidadPorEquipo) return message.channel.send(`❌ Tu equipo está lleno (${infoPartida.capacidadPorEquipo}/${infoPartida.capacidadPorEquipo}).`);
+        if (infoPartida.equipo1.includes(compañero.id) || infoPartida.equipo2.includes(compañero.id)) return message.channel.send('❌ El usuario ya está en esta partida.');
 
         const rowTeam = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('aceptar_equipo').setLabel('Aceptar').setStyle(ButtonStyle.Success),
             new ButtonBuilder().setCustomId('rechazar_equipo').setLabel('Rechazar').setStyle(ButtonStyle.Danger)
         );
 
-        // Dar permisos inmediatos para ver y escribir en la sala de la partida
         await message.channel.permissionOverwrites.edit(compañero.id, { ViewChannel: true, SendMessages: true });
 
         const embedInvitacion = new EmbedBuilder()
@@ -213,9 +233,7 @@ client.on('messageCreate', async (message) => {
         const collector = msgInvitacion.createMessageComponentCollector({ componentType: ComponentType.Button, time: 60000 });
 
         collector.on('collect', async i => {
-            if (i.user.id !== compañero.id) {
-                return i.reply({ content: '❌ Solo el jugador etiquetado puede responder a esta invitación.', ephemeral: true });
-            }
+            if (i.user.id !== compañero.id) return i.reply({ content: '❌ Solo el jugador etiquetado puede responder.', ephemeral: true });
 
             if (i.customId === 'aceptar_equipo') {
                 equipoDelCapitan.push(compañero.id);
@@ -224,44 +242,34 @@ client.on('messageCreate', async (message) => {
             }
 
             if (i.customId === 'rechazar_equipo') {
-                // Quitar permiso del canal si rechaza
                 await message.channel.permissionOverwrites.delete(compañero.id).catch(() => {});
                 await i.update({ content: `❌ <@${compañero.id}> rechazó la invitación al equipo.`, embeds: [], components: [] });
                 return collector.stop();
             }
         });
-
-        collector.on('end', collected => {
-            if (collected.size === 0) {
-                msgInvitacion.edit({ content: '⏰ Invitación expirada.', embeds: [], components: [] }).catch(() => {});
-            }
-        });
         return;
     }
 
-    // COMANDO .comenzar (SOLO CAPITANES)
+    // COMANDO .comenzar
     if (command === '.comenzar') {
         const esCap1 = message.author.id === infoPartida.capitan1;
         const esCap2 = message.author.id === infoPartida.capitan2;
 
         if (!esCap1 && !esCap2) return message.channel.send('❌ Solo los capitanes pueden dar inicio.');
-
         if (infoPartida.equipo1.length < infoPartida.capacidadPorEquipo || infoPartida.equipo2.length < infoPartida.capacidadPorEquipo) {
             return message.channel.send(`❌ Faltan integrantes en los equipos para completar la modalidad **${infoPartida.modo.toUpperCase()}**.`);
         }
 
         infoPartida.iniciada = true;
-        return message.channel.send('🚀 **¡La partida ha comenzado oficialmente!** Buena suerte a ambos equipos.');
+        return message.channel.send('🚀 **¡La partida ha comenzado oficialmente!** Buena suerte.');
     }
 
-    // COMANDO .win (2 COINS PARA CAPITÁN E INTEGRANTES)
+    // COMANDO .win (2 COINS PARA CADA INTEGRANTE DEL EQUIPO GANADOR)
     if (command === '.win' || command === '.ganador') {
         const esCap1 = message.author.id === infoPartida.capitan1;
         const esCap2 = message.author.id === infoPartida.capitan2;
 
-        if (!esCap1 && !esCap2 && !esStaff(message.member)) {
-            return message.channel.send('❌ Solo el capitán de cada equipo o el Staff pueden reclamar la victoria con `.win`.');
-        }
+        if (!esCap1 && !esCap2 && !esStaff(message.member)) return message.channel.send('❌ Solo los capitanes o el Staff pueden reclamar victoria.');
 
         const numGanador = esCap1 ? 1 : 2;
         const equipoGanador = esCap1 ? infoPartida.equipo1 : infoPartida.equipo2;
@@ -288,7 +296,6 @@ client.on('messageCreate', async (message) => {
                     return i.reply({ content: '❌ No tienes permisos para confirmar esta victoria.', ephemeral: true });
                 }
 
-                // Entrega de 2 Coins a TODOS (Capitán + Integrantes)
                 for (const uId of equipoGanador) {
                     const pData = await obtenerOIniciarUsuario(uId);
                     pData.coins += 2;
@@ -325,6 +332,47 @@ client.on('messageCreate', async (message) => {
     }
 });
 
+// ESCUCHADOR DE INTERACCIONES DE BOTONES (COMPATIBILIDAD CON PANALES NUEVOS Y VIEJOS)
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isButton()) return;
+
+    const { customId, user, guild, channel } = interaction;
+
+    // Responde inmediatamente a la API de Discord para evitar "La aplicación no ha respondido"
+    await interaction.deferUpdate().catch(() => {});
+
+    // Mapeo flexible para reconocer botones tanto viejos como nuevos
+    let modo = null;
+    if (customId.includes('1v1') || customId === 'fila_1') modo = '1v1';
+    else if (customId.includes('2v2') || customId === 'fila_2') modo = '2v2';
+    else if (customId.includes('3v3') || customId === 'fila_3') modo = '3v3';
+    else if (customId.includes('4v4')) modo = '4v4';
+    else if (customId.includes('5v5')) modo = '5v5';
+    else if (customId.includes('6v6')) modo = '6v6';
+
+    if (modo) {
+        await procesarEntradaFila(user.id, modo, guild, channel);
+        return;
+    }
+
+    if (customId.includes('salir')) {
+        let salio = false;
+        for (const m in filas) {
+            const idx = filas[m].indexOf(user.id);
+            if (idx !== -1) {
+                filas[m].splice(idx, 1);
+                salio = true;
+            }
+        }
+        if (salio) {
+            return interaction.followUp({ content: '🚪 Has salido de la fila correctamente.', ephemeral: true }).catch(() => {});
+        } else {
+            return interaction.followUp({ content: '❌ No estás anotado en ninguna fila.', ephemeral: true }).catch(() => {});
+        }
+    }
+});
+
+// Servidor Web HTTP para mantener activo Render
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('Bot 1 en linea 24/7');
