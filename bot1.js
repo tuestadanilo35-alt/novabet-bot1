@@ -26,16 +26,18 @@ const client = new Client({
 const ROLES_STAFF = ['ADMINS | NOVA BET', 'OWNERS | NOVA BET', 'ADM | FILA'];
 const CATEGORIA_FILAS_ID = 'AQUÍ_ID_CATEGORIA_PARTIDAS';
 
-// Estado global de las filas dinámicas
-const filasDinamicas = {
-    '1': [],
-    '2': [],
-    '3': []
-};
+// Estructura para almacenar las 3 filas de cada modalidad (1v1 a 6v6)
+const MODOS = ['1v1', '2v2', '3v3', '4v4', '5v5', '6v6'];
+const estadoFilas = {};
 
-// Configuración por defecto del panel (5v5 como la captura)
-let modoActual = '5v5'; 
-let limiteJugadoresPorFila = 10; // 5v5 = 10 jugadores por fila para armar la partida
+MODOS.forEach(m => {
+    estadoFilas[m] = {
+        1: [],
+        2: [],
+        3: []
+    };
+});
+
 const partidasActivas = new Map();
 
 // Conexión a MongoDB
@@ -57,35 +59,33 @@ function esStaff(member) {
     return member.roles.cache.some(r => ROLES_STAFF.includes(r.name));
 }
 
-// Generador del Embed idéntico a la imagen recibida
-function generarEmbedFilas(modo = '5v5') {
+// Generador de Embed para cada modalidad
+function generarEmbedModo(modo) {
+    const filasModo = estadoFilas[modo];
     const renderFila = (num) => {
-        const lista = filasDinamicas[num];
-        const count = lista.length;
-        if (count === 0) {
-            return `*Vacía*`;
-        }
+        const lista = filasModo[num];
+        if (lista.length === 0) return '*Vacía*';
         return lista.map(id => `<@${id}>`).join(' ');
     };
 
     return new EmbedBuilder()
-        .setTitle(`${modo} | ¿Buscando Partida?`)
+        .setTitle(`${modo.toUpperCase()} | ¿Buscando Partida?`)
         .setDescription(
-            `Unite a una de las **3 filas** de **${modo}** haciendo clic en los botones de abajo.\n\n` +
-            `🏆 **Formato**\n${modo} Normal\n\n` +
-            `🟢 **Fila 1 — ${filasDinamicas['1'].length} jugador(es)**\n${renderFila('1')}\n\n` +
-            `🟡 **Fila 2 — ${filasDinamicas['2'].length} jugador(es)**\n${renderFila('2')}\n\n` +
-            `🔵 **Fila 3 — ${filasDinamicas['3'].length} jugador(es)**\n${renderFila('3')}`
+            `Unite a una de las **3 filas** de **${modo.toUpperCase()}** haciendo clic en los botones de abajo.\n\n` +
+            `🏆 **Formato**\n${modo.toUpperCase()} Normal\n\n` +
+            `🟢 **Fila 1 — ${filasModo[1].length} jugador(es)**\n${renderFila(1)}\n\n` +
+            `🟡 **Fila 2 — ${filasModo[2].length} jugador(es)**\n${renderFila(2)}\n\n` +
+            `🔵 **Fila 3 — ${filasModo[3].length} jugador(es)**\n${renderFila(3)}`
         )
         .setColor('#2ECC71');
 }
 
-function obtenerBotonesPanel() {
+function obtenerBotonesModo(modo) {
     return new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('fila_1').setLabel('Fila 1').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId('fila_2').setLabel('Fila 2').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('fila_3').setLabel('Fila 3').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('salir_fila').setLabel('❌ Salir de la fila').setStyle(ButtonStyle.Danger)
+        new ButtonBuilder().setCustomId(`fila_${modo}_1`).setLabel('Fila 1').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`fila_${modo}_2`).setLabel('Fila 2').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`fila_${modo}_3`).setLabel('Fila 3').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(`salir_${modo}`).setLabel('❌ Salir de la fila').setStyle(ButtonStyle.Danger)
     );
 }
 
@@ -140,78 +140,85 @@ async function crearSalaDePartida(jugadores, modo, guild) {
 
 client.once('ready', () => console.log(`🤖 Bot 1 conectado como ${client.user.tag}`));
 
-// MANEJO DE BOTONES (SIN MENSAJES EXTRA, ACTUALIZACIÓN VISUAL DIRECTA)
+// MANEJO DE BOTONES EN TIEMPO REAL
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
 
     const { customId, user, guild } = interaction;
     const userId = user.id;
 
-    // Verificar si el usuario está sancionado/bloqueado
     const pData = await obtenerOIniciarUsuario(userId);
     if (pData.bloqueadoFilas) {
         return interaction.reply({ content: '🚫 Estás bloqueado de las filas por acumular sanciones.', ephemeral: true });
     }
 
-    // BOTÓN DE SALIR
-    if (customId === 'salir_fila') {
-        for (const num in filasDinamicas) {
-            const idx = filasDinamicas[num].indexOf(userId);
-            if (idx !== -1) {
-                filasDinamicas[num].splice(idx, 1);
-            }
+    // BOTÓN SALIR
+    if (customId.startsWith('salir_')) {
+        const modo = customId.replace('salir_', '');
+        for (const num in estadoFilas[modo]) {
+            const idx = estadoFilas[modo][num].indexOf(userId);
+            if (idx !== -1) estadoFilas[modo][num].splice(idx, 1);
         }
-        await interaction.update({ embeds: [generarEmbedFilas(modoActual)], components: [obtenerBotonesPanel()] });
+        await interaction.update({ embeds: [generarEmbedModo(modo)], components: [obtenerBotonesModo(modo)] });
         return;
     }
 
-    // BOTONES DE FILA (Fila 1, Fila 2, Fila 3)
-    const numFila = customId.replace('fila_', '');
-    if (filasDinamicas[numFila]) {
-        // Remover de cualquier otra fila previa
-        for (const n in filasDinamicas) {
-            const idx = filasDinamicas[n].indexOf(userId);
-            if (idx !== -1) filasDinamicas[n].splice(idx, 1);
+    // BOTONES ENTRAR A FILA
+    if (customId.startsWith('fila_')) {
+        const partes = customId.split('_'); // ej: ['fila', '1v1', '1']
+        const modo = partes[1];
+        const numFila = partes[2];
+
+        // Capacidad necesaria para iniciar partida (ej. 1v1 = 2 jugadores, 5v5 = 10 jugadores)
+        const numJugadoresPorEquipo = parseInt(modo.replace('v', '')) || 1;
+        const limitePartida = numJugadoresPorEquipo * 2;
+
+        // Remover de cualquier otra fila del mismo modo
+        for (const n in estadoFilas[modo]) {
+            const idx = estadoFilas[modo][n].indexOf(userId);
+            if (idx !== -1) estadoFilas[modo][n].splice(idx, 1);
         }
 
-        // Agregar a la fila seleccionada
-        filasDinamicas[numFila].push(userId);
+        // Agregar a la fila elegida
+        estadoFilas[modo][numFila].push(userId);
 
-        // Si se completa la fila para armar la partida
-        if (filasDinamicas[numFila].length >= limiteJugadoresPorFila) {
-            const jugadoresPartida = [...filasDinamicas[numFila]];
-            filasDinamicas[numFila] = []; // Limpiar fila
-            await interaction.update({ embeds: [generarEmbedFilas(modoActual)], components: [obtenerBotonesPanel()] });
-            await crearSalaDePartida(jugadoresPartida, modoActual, guild);
+        // Si se completa la fila
+        if (estadoFilas[modo][numFila].length >= limitePartida) {
+            const jugadoresPartida = [...estadoFilas[modo][numFila]];
+            estadoFilas[modo][numFila] = []; // Limpiar fila
+            await interaction.update({ embeds: [generarEmbedModo(modo)], components: [obtenerBotonesModo(modo)] });
+            await crearSalaDePartida(jugadoresPartida, modo, guild);
             return;
         }
 
-        // Actualizar silenciosamente el panel visual
-        await interaction.update({ embeds: [generarEmbedFilas(modoActual)], components: [obtenerBotonesPanel()] });
+        // Actualizar el Embed inmediatamente
+        await interaction.update({ embeds: [generarEmbedModo(modo)], components: [obtenerBotonesModo(modo)] });
     }
 });
 
-// COMANDOS DENTRO DE LOS CANALES Y CHAT
+// COMANDOS DE CHAT
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
 
     const args = message.content.trim().split(/ +/);
     const command = args[0].toLowerCase();
 
-    // COMANDO PARA CREAR EL PANEL EN EL CANAL (#FILAS)
+    // COMANDO PARA GENERAR TODOS LOS PANELES DE GOLPE
     if (command === '.panel-filas' || command === '.setup-filas') {
-        if (!esStaff(message.member)) return message.channel.send('❌ Solo el Staff puede enviar este panel.');
+        if (!esStaff(message.member)) return message.channel.send('❌ Solo el Staff puede enviar el panel.');
         message.delete().catch(() => {});
 
-        modoActual = args[1] ? args[1].toLowerCase() : '5v5';
-        const numModo = parseInt(modoActual.replace('v', '')) || 5;
-        limiteJugadoresPorFila = numModo * 2;
-
-        return message.channel.send({ embeds: [generarEmbedFilas(modoActual)], components: [obtenerBotonesPanel()] });
+        for (const modo of MODOS) {
+            await message.channel.send({
+                embeds: [generarEmbedModo(modo)],
+                components: [obtenerBotonesModo(modo)]
+            });
+        }
+        return;
     }
 
     // ==========================================
-    // COMANDOS DE LA PARTIDA (.team, .comenzar, .win)
+    // COMANDOS DENTRO DE SALA (.team, .comenzar, .win)
     // ==========================================
 
     if (!message.channel.name.startsWith('🎮-partida-')) return;
@@ -283,7 +290,7 @@ client.on('messageCreate', async (message) => {
         return message.channel.send('🚀 **¡La partida ha comenzado oficialmente!** Buena suerte.');
     }
 
-    // COMANDO .win (2 COINS POR INTEGRANTE DEL EQUIPO GANADOR)
+    // COMANDO .win
     if (command === '.win' || command === '.ganador') {
         const esCap1 = message.author.id === infoPartida.capitan1;
         const esCap2 = message.author.id === infoPartida.capitan2;
@@ -351,7 +358,7 @@ client.on('messageCreate', async (message) => {
     }
 });
 
-// Servidor Web HTTP para mantener activo Render
+// Servidor HTTP para Render
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('Bot 1 en linea 24/7');
