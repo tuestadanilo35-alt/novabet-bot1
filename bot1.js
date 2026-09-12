@@ -60,7 +60,7 @@ function esStaff(member) {
     return member.roles.cache.some(r => ROLES_STAFF.includes(r.name));
 }
 
-// Generador de Embed para cada modalidad (Actualización en tiempo real)
+// Generador de Embed para cada modalidad
 function generarEmbedModo(modo) {
     const filasModo = estadoFilas[modo];
     const renderFila = (num) => {
@@ -141,7 +141,7 @@ async function crearSalaDePartida(jugadores, modo, guild) {
 
 client.once('ready', () => console.log(`🤖 Bot 1 conectado como ${client.user.tag}`));
 
-// MANEJO DE BOTONES EN TIEMPO REAL
+// MANEJO DE BOTONES EN TIEMPO REAL (SIN MENSAJES EXTRA)
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
 
@@ -166,7 +166,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // BOTONES ENTRAR A FILA
     if (customId.startsWith('fila_')) {
-        const partes = customId.split('_'); // ej: ['fila', '1v1', '1']
+        const partes = customId.split('_');
         const modo = partes[1];
         const numFila = partes[2];
 
@@ -191,7 +191,7 @@ client.on('interactionCreate', async (interaction) => {
             return;
         }
 
-        // Actualizar el Embed inmediatamente sin mensajes extras
+        // Actualizar el Embed inmediatamente
         await interaction.update({ embeds: [generarEmbedModo(modo)], components: [obtenerBotonesModo(modo)] });
     }
 });
@@ -204,11 +204,65 @@ client.on('messageCreate', async (message) => {
     const command = args[0].toLowerCase();
 
     // ==========================================
-    // COMANDOS DE ESTADÍSTICAS Y CONSULTA DE COINS
+    // COMANDOS DE ADMINISTRACIÓN DE COINS (STAFF)
     // ==========================================
 
-    // COMANDO !coins
-    if (command === '!coins') {
+    // COMANDO .addcoins O !addcoins
+    if (command === '.addcoins' || command === '!addcoins' || command === '.add-coins' || command === '!add-coins') {
+        if (!esStaff(message.member)) {
+            return message.channel.send('❌ No tienes permisos de Staff para usar este comando.');
+        }
+
+        const objetivo = message.mentions.users.first();
+        const cantidad = parseInt(args[2] || args[1]); // Soporta ".addcoins @usuario 10" o ".addcoins 10 @usuario"
+
+        if (!objetivo || isNaN(cantidad) || cantidad <= 0) {
+            return message.channel.send('⚠️ **Uso correcto:** `.addcoins @jugador <cantidad>` (Ejemplo: `.addcoins @pat 50`)');
+        }
+
+        const pData = await obtenerOIniciarUsuario(objetivo.id);
+        pData.coins = (pData.coins || 0) + cantidad;
+        await pData.save();
+
+        const embedAdd = new EmbedBuilder()
+            .setTitle('✅ Coins Agregadas')
+            .setDescription(`Se han añadido **+${cantidad} Coins** a <@${objetivo.id}>.\n🪙 **Nuevo Balance:** \`${pData.coins}\` Coins.`)
+            .setColor('#2ECC71');
+
+        return message.channel.send({ embeds: [embedAdd] });
+    }
+
+    // COMANDO .removecoins O !removecoins
+    if (command === '.removecoins' || command === '!removecoins' || command === '.remove-coins' || command === '!remove-coins') {
+        if (!esStaff(message.member)) {
+            return message.channel.send('❌ No tienes permisos de Staff para usar este comando.');
+        }
+
+        const objetivo = message.mentions.users.first();
+        const cantidad = parseInt(args[2] || args[1]);
+
+        if (!objetivo || isNaN(cantidad) || cantidad <= 0) {
+            return message.channel.send('⚠️ **Uso correcto:** `.removecoins @jugador <cantidad>` (Ejemplo: `.removecoins @pat 20`)');
+        }
+
+        const pData = await obtenerOIniciarUsuario(objetivo.id);
+        pData.coins = Math.max(0, (pData.coins || 0) - cantidad);
+        await pData.save();
+
+        const embedRemove = new EmbedBuilder()
+            .setTitle('🔻 Coins Retiradas')
+            .setDescription(`Se han retirado **-${cantidad} Coins** a <@${objetivo.id}>.\n🪙 **Nuevo Balance:** \`${pData.coins}\` Coins.`)
+            .setColor('#E74C3C');
+
+        return message.channel.send({ embeds: [embedRemove] });
+    }
+
+    // ==========================================
+    // COMANDOS DE CONSULTA Y ESTADÍSTICAS
+    // ==========================================
+
+    // COMANDO !coins O .coins
+    if (command === '!coins' || command === '.coins') {
         const objetivo = message.mentions.users.first() || message.author;
         const pData = await obtenerOIniciarUsuario(objetivo.id);
 
@@ -220,8 +274,8 @@ client.on('messageCreate', async (message) => {
         return message.channel.send({ embeds: [embedCoins] });
     }
 
-    // COMANDO !stats O !perfil
-    if (command === '!stats' || command === '!perfil') {
+    // COMANDO !stats O .stats
+    if (command === '!stats' || command === '.stats' || command === '!perfil' || command === '.perfil') {
         const objetivo = message.mentions.users.first() || message.author;
         const pData = await obtenerOIniciarUsuario(objetivo.id);
 
@@ -245,8 +299,8 @@ client.on('messageCreate', async (message) => {
         return message.channel.send({ embeds: [embedStats] });
     }
 
-    // COMANDO !historial
-    if (command === '!historial') {
+    // COMANDO !historial O .historial
+    if (command === '!historial' || command === '.historial') {
         const objetivo = message.mentions.users.first() || message.author;
         const pData = await obtenerOIniciarUsuario(objetivo.id);
 
@@ -267,7 +321,7 @@ client.on('messageCreate', async (message) => {
         return message.channel.send({ embeds: [embedHistorial] });
     }
 
-    // COMANDO PANEL DE FILAS (GENERA LOS 6 DE GOLPE)
+    // COMANDO PANEL DE FILAS (GENERA LOS 6 PANELES DE GOLPE)
     if (command === '.panel-filas' || command === '.setup-filas') {
         if (!esStaff(message.member)) return message.channel.send('❌ Solo el Staff puede enviar el panel.');
         message.delete().catch(() => {});
@@ -354,7 +408,7 @@ client.on('messageCreate', async (message) => {
         return message.channel.send('🚀 **¡La partida ha comenzado oficialmente!** Buena suerte.');
     }
 
-    // COMANDO .win (OTORGA 2 COINS Y REGISTRA HISTORIAL)
+    // COMANDO .win
     if (command === '.win' || command === '.ganador') {
         const esCap1 = message.author.id === infoPartida.capitan1;
         const esCap2 = message.author.id === infoPartida.capitan2;
@@ -386,7 +440,6 @@ client.on('messageCreate', async (message) => {
                     return i.reply({ content: '❌ No tienes permisos para confirmar esta victoria.', ephemeral: true });
                 }
 
-                // Actualizar stats e historial del equipo ganador
                 for (const uId of equipoGanador) {
                     const pData = await obtenerOIniciarUsuario(uId);
                     pData.coins += 2;
@@ -401,7 +454,6 @@ client.on('messageCreate', async (message) => {
                     await pData.save();
                 }
 
-                // Actualizar stats e historial del equipo perdedor
                 for (const uId of equipoPerdedor) {
                     const pData = await obtenerOIniciarUsuario(uId);
                     pData.jugadas += 1;
