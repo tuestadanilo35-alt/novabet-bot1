@@ -73,10 +73,10 @@ function generarEmbedModo(modo) {
         .setTitle(`${modo.toUpperCase()} | ¿Buscando Partida?`)
         .setDescription(
             `Unite a una de las **3 filas** de **${modo.toUpperCase()}** haciendo clic en los botones de abajo.\n\n` +
-            `🏆 **Formato**\n${modo.toUpperCase()} Normal\n\n` +
-            `🟢 **Fila 1 — ${filasModo[1].length} jugador(es)**\n${renderFila(1)}\n\n` +
-            `🟡 **Fila 2 — ${filasModo[2].length} jugador(es)**\n${renderFila(2)}\n\n` +
-            `🔵 **Fila 3 — ${filasModo[3].length} jugador(es)**\n${renderFila(3)}`
+            `🏆 **Formato**\n${modo.toUpperCase()} Normal (2 Capitanes por fila)\n\n` +
+            `🟢 **Fila 1 — ${filasModo[1].length}/2 jugador(es)**\n${renderFila(1)}\n\n` +
+            `🟡 **Fila 2 — ${filasModo[2].length}/2 jugador(es)**\n${renderFila(2)}\n\n` +
+            `🔵 **Fila 3 — ${filasModo[3].length}/2 jugador(es)**\n${renderFila(3)}`
         )
         .setColor('#2ECC71');
 }
@@ -90,11 +90,11 @@ function obtenerBotonesModo(modo) {
     );
 }
 
-// Crear sala al completarse los cupos
+// Crear sala al unirse 2 CAPITANES
 async function crearSalaDePartida(jugadores, modo, guild) {
     const cap1 = jugadores[0];
     const cap2 = jugadores[1];
-    const capacidadPorEquipo = Math.ceil(jugadores.length / 2);
+    const numJugadoresPorEquipo = parseInt(modo.replace('v', '')) || 1;
 
     const overwrites = [
         { id: guild.id, deny: [PermissionsBitField.Flags.ViewChannel] }
@@ -123,25 +123,29 @@ async function crearSalaDePartida(jugadores, modo, guild) {
         capitan2: cap2,
         equipo1: [cap1],
         equipo2: [cap2],
-        capacidadPorEquipo: capacidadPorEquipo,
+        capacidadPorEquipo: numJugadoresPorEquipo,
+        listoCapitan1: false,
+        listoCapitan2: false,
         iniciada: false
     });
 
     const embedInstrucciones = new EmbedBuilder()
         .setTitle(`🎮 PARTIDA DE HABILIDAD: ${modo.toUpperCase()}`)
-        .setDescription(`🥊 **Capitán 1:** <@${cap1}>\n🥊 **Capitán 2:** <@${cap2}>\n\n` +
+        .setDescription(
+            `🥊 **Capitán 1:** <@${cap1}>\n🥊 **Capitán 2:** <@${cap2}>\n\n` +
             `📌 **INSTRUCCIONES:**\n` +
-            (capacidadPorEquipo > 1 ? `1️⃣ **.team @jugador**: Invita integrantes a tu equipo (Solo capitanes).\n` : '') +
-            `2️⃣ **.comenzar**: Ambos capitanes ejecutan para iniciar.\n` +
-            `3️⃣ **.win**: El capitán ganador reclama la victoria al finalizar.`)
+            (numJugadoresPorEquipo > 1 ? `1️⃣ **.team @jugador**: Invita integrantes a tu equipo (Faltan ${numJugadoresPorEquipo - 1} por equipo).\n` : '') +
+            `2️⃣ **.comenzar**: **Ambos capitanes** deben ejecutar este comando para iniciar.\n` +
+            `3️⃣ **.win @jugador**: El capitán ganador reclama la victoria etiquetándose a sí mismo al finalizar.`
+        )
         .setColor('#3498DB');
 
-    await ch.send({ content: jugadores.map(id => `<@${id}>`).join(' '), embeds: [embedInstrucciones] });
+    await ch.send({ content: `<@${cap1}> <@${cap2}>`, embeds: [embedInstrucciones] });
 }
 
 client.once('ready', () => console.log(`🤖 Bot 1 conectado como ${client.user.tag}`));
 
-// MANEJO DE BOTONES EN TIEMPO REAL (SIN MENSAJES EXTRA)
+// MANEJO DE BOTONES DE FILA (SIEMPRE 2 JUGADORES/CAPITANES)
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
 
@@ -170,8 +174,10 @@ client.on('interactionCreate', async (interaction) => {
         const modo = partes[1];
         const numFila = partes[2];
 
-        const numJugadoresPorEquipo = parseInt(modo.replace('v', '')) || 1;
-        const limitePartida = numJugadoresPorEquipo * 2;
+        // Evitar que el mismo capitán entre dos veces
+        if (estadoFilas[modo][numFila].includes(userId)) {
+            return interaction.reply({ content: '⚠️ Ya estás anotado en esta fila.', ephemeral: true });
+        }
 
         // Remover de cualquier otra fila del mismo modo
         for (const n in estadoFilas[modo]) {
@@ -179,19 +185,19 @@ client.on('interactionCreate', async (interaction) => {
             if (idx !== -1) estadoFilas[modo][n].splice(idx, 1);
         }
 
-        // Agregar a la fila elegida
+        // Agregar al capitán
         estadoFilas[modo][numFila].push(userId);
 
-        // Si se completa la fila
-        if (estadoFilas[modo][numFila].length >= limitePartida) {
+        // ¡REGLA CLAVE!: Basta con 2 capitanes en la fila para crear la sala
+        if (estadoFilas[modo][numFila].length >= 2) {
             const jugadoresPartida = [...estadoFilas[modo][numFila]];
-            estadoFilas[modo][numFila] = []; // Limpiar fila
+            estadoFilas[modo][numFila] = []; // Vaciar fila en el panel
             await interaction.update({ embeds: [generarEmbedModo(modo)], components: [obtenerBotonesModo(modo)] });
             await crearSalaDePartida(jugadoresPartida, modo, guild);
             return;
         }
 
-        // Actualizar el Embed inmediatamente
+        // Actualizar el Embed visualmente sin enviar mensajes de chat
         await interaction.update({ embeds: [generarEmbedModo(modo)], components: [obtenerBotonesModo(modo)] });
     }
 });
@@ -204,108 +210,92 @@ client.on('messageCreate', async (message) => {
     const command = args[0].toLowerCase();
 
     // ==========================================
-    // COMANDOS DE ADMINISTRACIÓN DE COINS (STAFF)
+    // COMANDOS DE ADMINISTRACIÓN Y CONSULTAS
     // ==========================================
 
-    // COMANDO .addcoins O !addcoins
     if (command === '.addcoins' || command === '!addcoins' || command === '.add-coins' || command === '!add-coins') {
-        if (!esStaff(message.member)) {
-            return message.channel.send('❌ No tienes permisos de Staff para usar este comando.');
-        }
-
+        if (!esStaff(message.member)) return message.channel.send('❌ No tienes permisos de Staff para usar este comando.');
         const objetivo = message.mentions.users.first();
-        const cantidad = parseInt(args[2] || args[1]); // Soporta ".addcoins @usuario 10" o ".addcoins 10 @usuario"
+        const cantidad = parseInt(args[2] || args[1]);
 
         if (!objetivo || isNaN(cantidad) || cantidad <= 0) {
-            return message.channel.send('⚠️ **Uso correcto:** `.addcoins @jugador <cantidad>` (Ejemplo: `.addcoins @pat 50`)');
+            return message.channel.send('⚠️ **Uso correcto:** `.addcoins @jugador <cantidad>`');
         }
 
         const pData = await obtenerOIniciarUsuario(objetivo.id);
         pData.coins = (pData.coins || 0) + cantidad;
         await pData.save();
 
-        const embedAdd = new EmbedBuilder()
-            .setTitle('✅ Coins Agregadas')
-            .setDescription(`Se han añadido **+${cantidad} Coins** a <@${objetivo.id}>.\n🪙 **Nuevo Balance:** \`${pData.coins}\` Coins.`)
-            .setColor('#2ECC71');
-
-        return message.channel.send({ embeds: [embedAdd] });
+        return message.channel.send({
+            embeds: [
+                new EmbedBuilder()
+                    .setTitle('✅ Coins Agregadas')
+                    .setDescription(`Se han añadido **+${cantidad} Coins** a <@${objetivo.id}>.\n🪙 **Nuevo Balance:** \`${pData.coins}\` Coins.`)
+                    .setColor('#2ECC71')
+            ]
+        });
     }
 
-    // COMANDO .removecoins O !removecoins
-    if (command === '.removecoins' || command === '!removecoins' || command === '.remove-coins' || command === '!remove-coins') {
-        if (!esStaff(message.member)) {
-            return message.channel.send('❌ No tienes permisos de Staff para usar este comando.');
-        }
-
+    if (command === '.removecoins' || command === '!removecoins') {
+        if (!esStaff(message.member)) return message.channel.send('❌ No tienes permisos de Staff.');
         const objetivo = message.mentions.users.first();
         const cantidad = parseInt(args[2] || args[1]);
 
         if (!objetivo || isNaN(cantidad) || cantidad <= 0) {
-            return message.channel.send('⚠️ **Uso correcto:** `.removecoins @jugador <cantidad>` (Ejemplo: `.removecoins @pat 20`)');
+            return message.channel.send('⚠️ **Uso correcto:** `.removecoins @jugador <cantidad>`');
         }
 
         const pData = await obtenerOIniciarUsuario(objetivo.id);
         pData.coins = Math.max(0, (pData.coins || 0) - cantidad);
         await pData.save();
 
-        const embedRemove = new EmbedBuilder()
-            .setTitle('🔻 Coins Retiradas')
-            .setDescription(`Se han retirado **-${cantidad} Coins** a <@${objetivo.id}>.\n🪙 **Nuevo Balance:** \`${pData.coins}\` Coins.`)
-            .setColor('#E74C3C');
-
-        return message.channel.send({ embeds: [embedRemove] });
+        return message.channel.send({
+            embeds: [
+                new EmbedBuilder()
+                    .setTitle('🔻 Coins Retiradas')
+                    .setDescription(`Se han retirado **-${cantidad} Coins** a <@${objetivo.id}>.\n🪙 **Nuevo Balance:** \`${pData.coins}\` Coins.`)
+                    .setColor('#E74C3C')
+            ]
+        });
     }
 
-    // ==========================================
-    // COMANDOS DE CONSULTA Y ESTADÍSTICAS
-    // ==========================================
-
-    // COMANDO !coins O .coins
     if (command === '!coins' || command === '.coins') {
         const objetivo = message.mentions.users.first() || message.author;
         const pData = await obtenerOIniciarUsuario(objetivo.id);
-
-        const embedCoins = new EmbedBuilder()
-            .setTitle(`💰 Balance de Coins`)
-            .setDescription(`👤 **Usuario:** <@${objetivo.id}>\n🪙 **Coins:** \`${pData.coins || 0}\``)
-            .setColor('#F1C40F');
-
-        return message.channel.send({ embeds: [embedCoins] });
+        return message.channel.send({
+            embeds: [
+                new EmbedBuilder()
+                    .setTitle(`💰 Balance de Coins`)
+                    .setDescription(`👤 **Usuario:** <@${objetivo.id}>\n🪙 **Coins:** \`${pData.coins || 0}\``)
+                    .setColor('#F1C40F')
+            ]
+        });
     }
 
-    // COMANDO !stats O .stats
     if (command === '!stats' || command === '.stats' || command === '!perfil' || command === '.perfil') {
         const objetivo = message.mentions.users.first() || message.author;
         const pData = await obtenerOIniciarUsuario(objetivo.id);
-
         const totalJugadas = pData.jugadas || 0;
         const victorias = pData.ganadas || 0;
         const derrotas = totalJugadas - victorias;
         const winrate = totalJugadas > 0 ? ((victorias / totalJugadas) * 100).toFixed(1) : '0.0';
 
-        const embedStats = new EmbedBuilder()
-            .setTitle(`📊 Estadísticas de ${objetivo.username}`)
-            .setDescription(
-                `👤 **Jugador:** <@${objetivo.id}>\n` +
-                `🪙 **Coins:** \`${pData.coins || 0}\`\n\n` +
-                `🎮 **Partidas Jugadas:** \`${totalJugadas}\`\n` +
-                `🏆 **Victorias:** \`${victorias}\`\n` +
-                `💀 **Derrotas:** \`${derrotas < 0 ? 0 : derrotas}\`\n` +
-                `📈 **Winrate:** \`${winrate}%\``
-            )
-            .setColor('#3498DB');
-
-        return message.channel.send({ embeds: [embedStats] });
+        return message.channel.send({
+            embeds: [
+                new EmbedBuilder()
+                    .setTitle(`📊 Estadísticas de ${objetivo.username}`)
+                    .setDescription(`👤 **Jugador:** <@${objetivo.id}>\n🪙 **Coins:** \`${pData.coins || 0}\`\n\n🎮 **Partidas Jugadas:** \`${totalJugadas}\`\n🏆 **Victorias:** \`${victorias}\`\n💀 **Derrotas:** \`${derrotas < 0 ? 0 : derrotas}\`\n📈 **Winrate:** \`${winrate}%\``)
+                    .setColor('#3498DB')
+            ]
+        });
     }
 
-    // COMANDO !historial O .historial
     if (command === '!historial' || command === '.historial') {
         const objetivo = message.mentions.users.first() || message.author;
         const pData = await obtenerOIniciarUsuario(objetivo.id);
 
         if (!pData.historial || pData.historial.length === 0) {
-            return message.channel.send(`📋 <@${objetivo.id}> no tiene partidas registradas en el historial.`);
+            return message.channel.send(`📋 <@${objetivo.id}> no tiene partidas registradas.`);
         }
 
         const ultimasPartidas = pData.historial.slice(-5).reverse().map((h, i) => {
@@ -313,15 +303,17 @@ client.on('messageCreate', async (message) => {
             return `**${i + 1}.** ${resEmoji} **${h.resultado}** | Modo: \`${h.modo || 'N/A'}\` | Coins: \`+${h.coinsObtenidas || 0}\``;
         }).join('\n');
 
-        const embedHistorial = new EmbedBuilder()
-            .setTitle(`📜 Historial Reciente de ${objetivo.username}`)
-            .setDescription(ultimasPartidas)
-            .setColor('#9B59B6');
-
-        return message.channel.send({ embeds: [embedHistorial] });
+        return message.channel.send({
+            embeds: [
+                new EmbedBuilder()
+                    .setTitle(`📜 Historial Reciente de ${objetivo.username}`)
+                    .setDescription(ultimasPartidas)
+                    .setColor('#9B59B6')
+            ]
+        });
     }
 
-    // COMANDO PANEL DE FILAS (GENERA LOS 6 PANELES DE GOLPE)
+    // COMANDO PARA CREAR TODOS LOS PANELES DE FILAS
     if (command === '.panel-filas' || command === '.setup-filas') {
         if (!esStaff(message.member)) return message.channel.send('❌ Solo el Staff puede enviar el panel.');
         message.delete().catch(() => {});
@@ -350,15 +342,20 @@ client.on('messageCreate', async (message) => {
         const esCap1 = message.author.id === infoPartida.capitan1;
         const esCap2 = message.author.id === infoPartida.capitan2;
 
-        if (!esCap1 && !esCap2) return message.channel.send('❌ Solo los capitanes del equipo pueden invitar integrantes.');
+        if (!esCap1 && !esCap2) return message.channel.send('❌ Solo los capitanes pueden invitar integrantes a su equipo.');
 
         const compañero = message.mentions.users.first();
         if (!compañero || compañero.bot) return message.channel.send('❌ Etiqueta a un jugador válido. Uso: `.team @usuario`');
 
         const equipoDelCapitan = esCap1 ? infoPartida.equipo1 : infoPartida.equipo2;
 
-        if (equipoDelCapitan.length >= infoPartida.capacidadPorEquipo) return message.channel.send(`❌ Tu equipo está lleno (${infoPartida.capacidadPorEquipo}/${infoPartida.capacidadPorEquipo}).`);
-        if (infoPartida.equipo1.includes(compañero.id) || infoPartida.equipo2.includes(compañero.id)) return message.channel.send('❌ El usuario ya está en esta partida.');
+        if (equipoDelCapitan.length >= infoPartida.capacidadPorEquipo) {
+            return message.channel.send(`❌ Tu equipo ya alcanzó el límite máximo de **${infoPartida.capacidadPorEquipo}** jugadores para la modalidad ${infoPartida.modo.toUpperCase()}.`);
+        }
+
+        if (infoPartida.equipo1.includes(compañero.id) || infoPartida.equipo2.includes(compañero.id)) {
+            return message.channel.send('❌ El usuario ya forma parte de la partida.');
+        }
 
         const rowTeam = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('aceptar_equipo').setLabel('Aceptar').setStyle(ButtonStyle.Success),
@@ -368,8 +365,8 @@ client.on('messageCreate', async (message) => {
         await message.channel.permissionOverwrites.edit(compañero.id, { ViewChannel: true, SendMessages: true });
 
         const embedInvitacion = new EmbedBuilder()
-            .setTitle('📩 INVITACIÓN A EQUIPO')
-            .setDescription(`Hola <@${compañero.id}>, ¿quieres formar parte de este equipo con <@${message.author.id}> para jugar **${infoPartida.modo.toUpperCase()}**?`)
+            .setTitle('📩 INVITACIÓN DE EQUIPO')
+            .setDescription(`Hola <@${compañero.id}>, el capitán <@${message.author.id}> te ha invitado a unirte a su equipo para jugar **${infoPartida.modo.toUpperCase()}**.\n\n👇 Presiona un botón para Aceptar o Rechazar.`)
             .setColor('#F39C12');
 
         const msgInvitacion = await message.channel.send({ content: `<@${compañero.id}>`, embeds: [embedInvitacion], components: [rowTeam] });
@@ -377,58 +374,81 @@ client.on('messageCreate', async (message) => {
         const collector = msgInvitacion.createMessageComponentCollector({ componentType: ComponentType.Button, time: 60000 });
 
         collector.on('collect', async i => {
-            if (i.user.id !== compañero.id) return i.reply({ content: '❌ Solo el jugador etiquetado puede responder.', ephemeral: true });
+            if (i.user.id !== compañero.id) return i.reply({ content: '❌ Solo el jugador invitado puede responder.', ephemeral: true });
 
             if (i.customId === 'aceptar_equipo') {
                 equipoDelCapitan.push(compañero.id);
-                await i.update({ content: `✅ <@${compañero.id}> ha aceptado formar parte del equipo.`, embeds: [], components: [] });
+                await i.update({ content: `✅ <@${compañero.id}> ha **ACEPTADO** unirse al equipo de <@${message.author.id}>.`, embeds: [], components: [] });
                 return collector.stop();
             }
 
             if (i.customId === 'rechazar_equipo') {
                 await message.channel.permissionOverwrites.delete(compañero.id).catch(() => {});
-                await i.update({ content: `❌ <@${compañero.id}> rechazó la invitación al equipo.`, embeds: [], components: [] });
+                await i.update({ content: `❌ <@${compañero.id}> **RECHAZÓ** la invitación.`, embeds: [], components: [] });
                 return collector.stop();
             }
         });
         return;
     }
 
-    // COMANDO .comenzar
+    // COMANDO .comenzar (REQUIERE QUE AMBOS CAPITANES LO USEN)
     if (command === '.comenzar') {
         const esCap1 = message.author.id === infoPartida.capitan1;
         const esCap2 = message.author.id === infoPartida.capitan2;
 
-        if (!esCap1 && !esCap2) return message.channel.send('❌ Solo los capitanes pueden dar inicio.');
+        if (!esCap1 && !esCap2) return message.channel.send('❌ Solo los 2 capitanes pueden dar inicio.');
+
         if (infoPartida.equipo1.length < infoPartida.capacidadPorEquipo || infoPartida.equipo2.length < infoPartida.capacidadPorEquipo) {
-            return message.channel.send(`❌ Faltan integrantes en los equipos para completar la modalidad **${infoPartida.modo.toUpperCase()}**.`);
+            return message.channel.send(`❌ Los equipos aún no están completos. Ambos deben tener **${infoPartida.capacidadPorEquipo}** jugador(es).`);
         }
 
-        infoPartida.iniciada = true;
-        return message.channel.send('🚀 **¡La partida ha comenzado oficialmente!** Buena suerte.');
+        if (esCap1) infoPartida.listoCapitan1 = true;
+        if (esCap2) infoPartida.listoCapitan2 = true;
+
+        if (infoPartida.listoCapitan1 && infoPartida.listoCapitan2) {
+            infoPartida.iniciada = true;
+            return message.channel.send({
+                embeds: [
+                    new EmbedBuilder()
+                        .setTitle('🚀 ¡PARTIDA INICIADA!')
+                        .setDescription('Ambos capitanes han confirmado. ¡Mucha suerte a ambos equipos!')
+                        .setColor('#2ECC71')
+                ]
+            });
+        } else {
+            const capFaltante = infoPartida.listoCapitan1 ? infoPartida.capitan2 : infoPartida.capitan1;
+            return message.channel.send(`✅ Capitán <@${message.author.id}> listo. Esperando a que el otro capitán (<@${capFaltante}>) ejecute **.comenzar**.`);
+        }
     }
 
-    // COMANDO .win
+    // COMANDO .win (EL GANADOR SE ETIQUETA A SÍ MISMO O A SU EQUIPO)
     if (command === '.win' || command === '.ganador') {
         const esCap1 = message.author.id === infoPartida.capitan1;
         const esCap2 = message.author.id === infoPartida.capitan2;
 
-        if (!esCap1 && !esCap2 && !esStaff(message.member)) return message.channel.send('❌ Solo los capitanes o el Staff pueden reclamar victoria.');
+        if (!esCap1 && !esCap2 && !esStaff(message.member)) return message.channel.send('❌ Solo un capitán o el Staff pueden declarar victoria.');
 
-        const numGanador = esCap1 ? 1 : 2;
-        const equipoGanador = esCap1 ? infoPartida.equipo1 : infoPartida.equipo2;
-        const equipoPerdedor = esCap1 ? infoPartida.equipo2 : infoPartida.equipo1;
+        const usuarioMencionado = message.mentions.users.first();
+        if (!usuarioMencionado) {
+            return message.channel.send('⚠️ **Uso correcto:** `.win @jugador` (Etiquétate a ti mismo para reclamar victoria).');
+        }
+
+        const numGanador = (usuarioMencionado.id === infoPartida.capitan1 || infoPartida.equipo1.includes(usuarioMencionado.id)) ? 1 : 2;
+        const equipoGanador = numGanador === 1 ? infoPartida.equipo1 : infoPartida.equipo2;
+        const equipoPerdedor = numGanador === 1 ? infoPartida.equipo2 : infoPartida.equipo1;
 
         const rowWin = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('confirmar_win').setLabel('Sí (Otorgar Win)').setStyle(ButtonStyle.Success),
-            new ButtonBuilder().setCustomId('denegar_win').setLabel('No (Llamar Staff)').setStyle(ButtonStyle.Danger)
+            new ButtonBuilder().setCustomId('confirmar_win').setLabel('Sí (Confirmar Result)').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId('denegar_win').setLabel('No (Disputar / Staff)').setStyle(ButtonStyle.Danger)
         );
 
         const embedWinMsg = new EmbedBuilder()
-            .setTitle('🏆 DECLARACIÓN DE VICTORIA')
-            .setDescription(`El capitán <@${message.author.id}> reclama la victoria para el **Equipo ${numGanador}**.\n\n` +
-                `❓ **¿Confirmar resultado y entregar 2 Coins a cada integrante del equipo ganador?**`)
-            .setColor('#2ECC71');
+            .setTitle('🏆 RECLAMO DE VICTORIA')
+            .setDescription(
+                `El capitán <@${message.author.id}> ha reclamado la victoria para el **Equipo ${numGanador}** (<@${usuarioMencionado.id}>).\n\n` +
+                `❓ **¿Confirmar resultado y entregar 2 Coins a cada integrante del equipo ganador?**`
+            )
+            .setColor('#F1C40F');
 
         const msgWin = await message.channel.send({ embeds: [embedWinMsg], components: [rowWin] });
 
@@ -436,15 +456,16 @@ client.on('messageCreate', async (message) => {
 
         collectorWin.on('collect', async i => {
             if (i.customId === 'confirmar_win') {
-                if (!esStaff(i.member) && !equipoPerdedor.includes(i.user.id) && i.user.id !== message.author.id) {
-                    return i.reply({ content: '❌ No tienes permisos para confirmar esta victoria.', ephemeral: true });
+                if (!esStaff(i.member) && !equipoPerdedor.includes(i.user.id)) {
+                    return i.reply({ content: '❌ Solo el equipo rival o el Staff pueden confirmar la victoria.', ephemeral: true });
                 }
 
+                // Otorgar 2 coins al equipo ganador
                 for (const uId of equipoGanador) {
                     const pData = await obtenerOIniciarUsuario(uId);
-                    pData.coins += 2;
-                    pData.ganadas += 1;
-                    pData.jugadas += 1;
+                    pData.coins = (pData.coins || 0) + 2;
+                    pData.ganadas = (pData.ganadas || 0) + 1;
+                    pData.jugadas = (pData.jugadas || 0) + 1;
                     pData.historial.push({
                         resultado: 'Victoria',
                         modo: infoPartida.modo,
@@ -454,9 +475,10 @@ client.on('messageCreate', async (message) => {
                     await pData.save();
                 }
 
+                // Registrar derrota al equipo perdedor
                 for (const uId of equipoPerdedor) {
                     const pData = await obtenerOIniciarUsuario(uId);
-                    pData.jugadas += 1;
+                    pData.jugadas = (pData.jugadas || 0) + 1;
                     pData.historial.push({
                         resultado: 'Derrota',
                         modo: infoPartida.modo,
@@ -467,7 +489,7 @@ client.on('messageCreate', async (message) => {
                 }
 
                 await i.update({
-                    content: `🏆 **¡Victoria confirmada!** Se le han otorgado **2 Coins** al capitán y a cada integrante del Equipo ${numGanador}.\n🔒 *Cerrando canal en 5 segundos...*`,
+                    content: `🏆 **¡Victoria confirmada!** Se otorgaron **2 Coins** a cada integrante del Equipo ${numGanador}.\n🔒 *Cerrando canal en 5 segundos...*`,
                     embeds: [],
                     components: []
                 });
@@ -477,7 +499,7 @@ client.on('messageCreate', async (message) => {
 
             } else if (i.customId === 'denegar_win') {
                 await i.update({
-                    content: `🚨 **DISPUTA ABIERTA**\n<@${i.user.id}> ha rechazado la victoria.\n📢 **Atención Staff:** ${ROLES_STAFF.map(r => `@${r}`).join(' ')}`,
+                    content: `🚨 **DISPUTA DE PARTIDA**\n<@${i.user.id}> ha rechazado la victoria reclamada.\n📢 **Atención Staff:** ${ROLES_STAFF.map(r => `@${r}`).join(' ')}`,
                     embeds: [],
                     components: []
                 });
