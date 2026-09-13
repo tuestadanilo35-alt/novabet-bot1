@@ -138,24 +138,38 @@ async function crearSalaDePartida(jugadores, modo, guild) {
         invitacionesPendientesCap2: 0,
         listoCapitan1: false,
         listoCapitan2: false,
-        iniciada: false
+        iniciada: false,
+        cancelacionEnProceso: false
     });
 
     const embedInstrucciones = new EmbedBuilder()
         .setTitle(`🎮 PARTIDA DE HABILIDAD: ${modo.toUpperCase()}`)
         .setDescription(
             `👑 **Capitán 1:** <@${cap1}>\n👑 **Capitán 2:** <@${cap2}>\n\n` +
-            `📌 **INSTRUCCIONES (Solo Capitanes):**\n` +
-            `1️⃣ **.team @jugador**: Invita integrantes a tu equipo (Opcional).\n` +
-            `2️⃣ **.comenzar**: Ambos capitanes deben ejecutarlo (Si invitaste a alguien, deben aceptar primero).\n` +
-            `3️⃣ **.win @jugador**: El capitán ganador reclama la victoria al finalizar.`
+            `📌 **INSTRUCCIONES:**\n` +
+            (modo === '1v1' ? `❌ *El comando .team está deshabilitado en modo 1v1.*\n` : `1️⃣ **.team @jugador**: Invita integrantes a tu equipo (Opcional).\n`) +
+            `2️⃣ **.comenzar** (o usa el botón): Ambos capitanes deben confirmar.\n` +
+            `3️⃣ **.cancelar** (o usa el botón): Cancela la partida antes de iniciar si el rival acepta.\n` +
+            `4️⃣ **.win @jugador**: Reclama la victoria al finalizar.`
         )
         .setColor('#3498DB');
 
-    await ch.send({ content: `<@${cap1}> <@${cap2}>`, embeds: [embedInstrucciones] });
+    // Botones rápidos para la sala
+    const rowControl = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('btn_comenzar_partida').setLabel('🚀 Comenzar').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('btn_cancelar_partida').setLabel('❌ Cancelar Partida').setStyle(ButtonStyle.Danger)
+    );
+
+    if (modo !== '1v1') {
+        rowControl.addComponents(
+            new ButtonBuilder().setCustomId('btn_info_team').setLabel('👥 .team (Ayuda)').setStyle(ButtonStyle.Secondary)
+        );
+    }
+
+    await ch.send({ content: `<@${cap1}> <@${cap2}>`, embeds: [embedInstrucciones], components: [rowControl] });
 }
 
-// Remover rol Capitán al finalizar la partida
+// Remover rol Capitán al finalizar o cancelar partida
 async function quitarRolCapitan(guild, uId) {
     const rolCapitan = guild.roles.cache.find(r => r.name === NOMBRE_ROL_CAPITAN);
     if (!rolCapitan) return;
@@ -163,15 +177,153 @@ async function quitarRolCapitan(guild, uId) {
     if (member) await member.roles.remove(rolCapitan).catch(() => {});
 }
 
+// Función auxiliar para procesar acción de ".comenzar" (desde texto o botón)
+async function procesarComenzar(channel, user, guild) {
+    const infoPartida = partidasActivas.get(channel.id);
+    if (!infoPartida) return;
+
+    if (infoPartida.iniciada) {
+        return channel.send('❌ La partida ya ha sido iniciada.');
+    }
+
+    const esCap1 = user.id === infoPartida.capitan1;
+    const esCap2 = user.id === infoPartida.capitan2;
+
+    if (!esCap1 && !esCap2) {
+        return channel.send('❌ Solo un **Capitán** de esta partida puede dar `.comenzar`.');
+    }
+
+    const pendientes = esCap1 ? infoPartida.invitacionesPendientesCap1 : infoPartida.invitacionesPendientesCap2;
+    if (pendientes > 0) {
+        return channel.send('⏳ Tu equipo tiene una invitación de **.team** pendiente. Deben **Aceptar** o **Rechazar** antes de dar `.comenzar`.');
+    }
+
+    if (esCap1) infoPartida.listoCapitan1 = true;
+    if (esCap2) infoPartida.listoCapitan2 = true;
+
+    if (infoPartida.listoCapitan1 && infoPartida.listoCapitan2) {
+        infoPartida.iniciada = true;
+        return channel.send({
+            embeds: [
+                new EmbedBuilder()
+                    .setTitle('🚀 ¡PARTIDA INICIADA!')
+                    .setDescription('Ambos capitanes están listos. ¡La partida ha comenzado! (El comando `.cancelar` ha sido desactivado).')
+                    .setColor('#2ECC71')
+            ]
+        });
+    } else {
+        const capFaltante = infoPartida.listoCapitan1 ? infoPartida.capitan2 : infoPartida.capitan1;
+        return channel.send(`✅ Capitán <@${user.id}> listo. Esperando a que el Capitán <@${capFaltante}> también confirme con **.comenzar** o presione el botón.`);
+    }
+}
+
+// Función auxiliar para procesar solicitud de ".cancelar"
+async function procesarSolicitudCancelar(channel, user, guild) {
+    const infoPartida = partidasActivas.get(channel.id);
+    if (!infoPartida) return;
+
+    if (infoPartida.iniciada) {
+        return channel.send('❌ **No se puede cancelar:** La partida ya ha comenzado.');
+    }
+
+    if (infoPartida.cancelacionEnProceso) {
+        return channel.send('⚠️ Ya hay una solicitud de cancelación en curso.');
+    }
+
+    const esCap1 = user.id === infoPartida.capitan1;
+    const esCap2 = user.id === infoPartida.capitan2;
+
+    if (!esCap1 && !esCap2) {
+        return channel.send('❌ Solo los **Capitanes** pueden cancelar la partida.');
+    }
+
+    const rivalId = esCap1 ? infoPartida.capitan2 : infoPartida.capitan1;
+    infoPartida.cancelacionEnProceso = true;
+
+    const rowCancelar = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('btn_aceptar_cancelar').setLabel('Aceptar Cancelación').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('btn_rechazar_cancelar').setLabel('Rechazar y Continuar').setStyle(ButtonStyle.Success)
+    );
+
+    const embedCancel = new EmbedBuilder()
+        .setTitle('⚠️ SOLICITUD DE CANCELACIÓN DE PARTIDA')
+        .setDescription(`El Capitán <@${user.id}> solicita cancelar la partida.\n\n<@${rivalId}>, ¿aceptas cancelar la partida?`)
+        .setColor('#E74C3C');
+
+    const msgCancel = await channel.send({ content: `<@${rivalId}>`, embeds: [embedCancel], components: [rowCancelar] });
+
+    const collectorCancel = msgCancel.createMessageComponentCollector({ componentType: ComponentType.Button, time: 60000 });
+
+    collectorCancel.on('collect', async i => {
+        if (i.user.id !== rivalId) {
+            return i.reply({ content: '❌ Solo el capitán solicitado puede responder a esta cancelación.', ephemeral: true });
+        }
+
+        if (i.customId === 'btn_aceptar_cancelar') {
+            await quitarRolCapitan(guild, infoPartida.capitan1);
+            await quitarRolCapitan(guild, infoPartida.capitan2);
+            partidasActivas.delete(channel.id);
+
+            await i.update({
+                content: `✅ **Partida Cancelada:** Ambos capitanes acordaron cancelar.\n🔒 *Cerrando canal en 5 segundos...*`,
+                embeds: [],
+                components: []
+            });
+
+            collectorCancel.stop();
+            setTimeout(() => channel.delete().catch(() => {}), 5000);
+            return;
+        }
+
+        if (i.customId === 'btn_rechazar_cancelar') {
+            infoPartida.cancelacionEnProceso = false;
+            await i.update({
+                content: `❌ <@${rivalId}> **RECHAZÓ** la cancelación. La partida continúa normalmente.`,
+                embeds: [],
+                components: []
+            });
+            return collectorCancel.stop();
+        }
+    });
+
+    collectorCancel.on('end', (_, reason) => {
+        if (reason === 'time' && infoPartida.cancelacionEnProceso) {
+            infoPartida.cancelacionEnProceso = false;
+            channel.send('⏳ El tiempo para responder a la solicitud de cancelación expiró. La partida continúa.');
+        }
+    });
+}
+
 client.once('ready', () => console.log(`🤖 Bot 1 conectado como ${client.user.tag}`));
 
-// MANEJO DE BOTONES DE FILA
+// MANEJO DE BOTONES
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
 
-    const { customId, user, guild } = interaction;
+    const { customId, user, guild, channel } = interaction;
     const userId = user.id;
 
+    // BOTONES EN SALA DE PARTIDA
+    if (customId === 'btn_comenzar_partida') {
+        await interaction.deferUpdate();
+        await procesarComenzar(channel, user, guild);
+        return;
+    }
+
+    if (customId === 'btn_cancelar_partida') {
+        await interaction.deferUpdate();
+        await procesarSolicitudCancelar(channel, user, guild);
+        return;
+    }
+
+    if (customId === 'btn_info_team') {
+        return interaction.reply({
+            content: '📌 **Cómo agregar compañeros a tu equipo:**\nUsa el comando `.team @usuario` en este chat para invitarlo.',
+            ephemeral: true
+        });
+    }
+
+    // BOTONES DE FILAS
     const pData = await obtenerOIniciarUsuario(userId);
     if (pData.bloqueadoFilas) {
         return interaction.reply({ content: '🚫 Estás bloqueado de las filas por acumular sanciones.', ephemeral: true });
@@ -347,9 +499,10 @@ client.on('messageCreate', async (message) => {
     const infoPartida = partidasActivas.get(message.channel.id);
     if (!infoPartida) return;
 
-    // COMANDO .team
+    // COMANDO .team (DESHABILITADO EN 1v1)
     if (command === '.team') {
         if (!esCapitan(message.member)) return message.channel.send('❌ Solo un **Capitán** de esta partida puede usar este comando.');
+        if (infoPartida.modo === '1v1') return message.channel.send('❌ El comando `.team` está deshabilitado en partidas 1v1.');
         if (infoPartida.iniciada) return message.channel.send('❌ La partida ya ha comenzado.');
 
         const esCap1 = message.author.id === infoPartida.capitan1;
@@ -370,7 +523,6 @@ client.on('messageCreate', async (message) => {
             return message.channel.send('❌ El usuario ya está en la partida.');
         }
 
-        // Sumar invitaciones pendientes
         if (esCap1) infoPartida.invitacionesPendientesCap1++;
         if (esCap2) infoPartida.invitacionesPendientesCap2++;
 
@@ -416,39 +568,17 @@ client.on('messageCreate', async (message) => {
 
     // COMANDO .comenzar
     if (command === '.comenzar') {
-        if (!esCapitan(message.member)) return message.channel.send('❌ Solo un **Capitán** de esta partida puede usar este comando.');
-
-        const esCap1 = message.author.id === infoPartida.capitan1;
-        const esCap2 = message.author.id === infoPartida.capitan2;
-
-        if (!esCap1 && !esCap2) return message.channel.send('❌ No eres capitán asignado en esta sala.');
-
-        // REGLA: Si invitó a alguien, no puede dar .comenzar hasta que su invitado acepte/rechace
-        const pendientes = esCap1 ? infoPartida.invitacionesPendientesCap1 : infoPartida.invitacionesPendientesCap2;
-        if (pendientes > 0) {
-            return message.channel.send('⏳ Tu equipo tiene una invitación de **.team** pendiente. Deben **Aceptar** o **Rechazar** antes de dar `.comenzar`.');
-        }
-
-        if (esCap1) infoPartida.listoCapitan1 = true;
-        if (esCap2) infoPartida.listoCapitan2 = true;
-
-        if (infoPartida.listoCapitan1 && infoPartida.listoCapitan2) {
-            infoPartida.iniciada = true;
-            return message.channel.send({
-                embeds: [
-                    new EmbedBuilder()
-                        .setTitle('🚀 ¡PARTIDA INICIADA!')
-                        .setDescription('Ambos capitanes han dado `.comenzar`. ¡Buena suerte a ambos equipos!')
-                        .setColor('#2ECC71')
-                ]
-            });
-        } else {
-            const capFaltante = infoPartida.listoCapitan1 ? infoPartida.capitan2 : infoPartida.capitan1;
-            return message.channel.send(`✅ Capitán <@${message.author.id}> listo. Esperando a que el Capitán <@${capFaltante}> también ejecute **.comenzar**.`);
-        }
+        await procesarComenzar(message.channel, message.author, message.guild);
+        return;
     }
 
-    // COMANDO .win
+    // COMANDO .cancelar
+    if (command === '.cancelar') {
+        await procesarSolicitudCancelar(message.channel, message.author, message.guild);
+        return;
+    }
+
+    // COMANDO .win CON OPCIÓN DE RETRACTARSE
     if (command === '.win' || command === '.ganador') {
         if (!esCapitan(message.member) && !esStaff(message.member)) {
             return message.channel.send('❌ Solo un **Capitán** o el Staff pueden reclamar la victoria.');
@@ -465,7 +595,8 @@ client.on('messageCreate', async (message) => {
 
         const rowWin = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('confirmar_win').setLabel('Sí (Confirmar)').setStyle(ButtonStyle.Success),
-            new ButtonBuilder().setCustomId('denegar_win').setLabel('No (Disputar / Staff)').setStyle(ButtonStyle.Danger)
+            new ButtonBuilder().setCustomId('denegar_win').setLabel('No (Disputar)').setStyle(ButtonStyle.Danger),
+            new ButtonBuilder().setCustomId('retractar_win').setLabel('↩ Retractarse (Cancelar reclamo)').setStyle(ButtonStyle.Secondary)
         );
 
         const embedWinMsg = new EmbedBuilder()
@@ -481,6 +612,19 @@ client.on('messageCreate', async (message) => {
         const collectorWin = msgWin.createMessageComponentCollector({ componentType: ComponentType.Button, time: 120000 });
 
         collectorWin.on('collect', async i => {
+            // Opción para retractarse
+            if (i.customId === 'retractar_win') {
+                if (i.user.id !== message.author.id && !esStaff(i.member)) {
+                    return i.reply({ content: '❌ Solo el usuario que ejecutó el .win puede retractarse.', ephemeral: true });
+                }
+                await i.update({
+                    content: `↩ <@${i.user.id}> se ha **retractado** de su reclamo de victoria. La partida puede continuar.`,
+                    embeds: [],
+                    components: []
+                });
+                return collectorWin.stop();
+            }
+
             if (i.customId === 'confirmar_win') {
                 if (!esStaff(i.member) && !equipoPerdedor.includes(i.user.id)) {
                     return i.reply({ content: '❌ Solo el equipo rival o el Staff pueden confirmar la victoria.', ephemeral: true });
@@ -514,9 +658,9 @@ client.on('messageCreate', async (message) => {
                     await pData.save();
                 }
 
-                // Retirar rol de Capitán al finalizar
                 await quitarRolCapitan(message.guild, infoPartida.capitan1);
                 await quitarRolCapitan(message.guild, infoPartida.capitan2);
+                partidasActivas.delete(message.channel.id);
 
                 await i.update({
                     content: `🏆 **¡Victoria confirmada!** Se otorgaron **2 Coins** a cada integrante del Equipo ${numGanador}.\n🔒 *Cerrando canal en 5 segundos...*`,
